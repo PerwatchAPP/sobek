@@ -355,7 +355,15 @@ scripts. Public API:
 - The compiler folds constant expressions in a private VM; each fold is capped at 8 MiB (`constEvalLimit`), above which the
   expression throws a `RangeError` when it runs (`1n<<(10n**12n)` must not allocate while compiling).
 
-The change is `memlimit.go` plus one-line `chargeMem` / `tick` / `enterNative` hooks in the built-ins, so upstream merges stay small.
+- String concatenation (`a + b`, `+=`, template literals) is charged its full result length, because Go strings are immutable
+  copies (`a.push(chunk + n)` really allocates `len(chunk)` each time). The one exception is `memlimit_concat.go`: a
+  Runtime keeps a few append buffers, and a concat whose left operand is exactly the tail of one writes only past that
+  tail (`unsafe.String` / `unsafe.Slice`) and is charged just those bytes, so `s += x` loops stay linear. It never
+  mutates a byte an existing string can see; any other left operand (an older prefix, a fork) is copied and charged in full.
+  Upstream merge audit: `Concat` call sites in `vm.go` (`_add`, `concatStrings`) must keep going through
+  `concat2` / `concatStrs`, and nothing else may append to a string's backing array.
+
+The change is `memlimit.go` and `memlimit_concat.go` plus one-line `chargeMem` / `tick` / `enterNative` hooks in the built-ins, so upstream merges stay small.
 
 Patch rule: every allocation sized from `toLength` / `ToInteger` / `toIntStrict` is charged BEFORE the `make`, and every
 loop over such a length ticks and charges what it appends. Audit on every upstream merge and check each new hit:

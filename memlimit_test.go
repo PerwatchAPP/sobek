@@ -135,6 +135,63 @@ func TestMemoryLimitConcatNoFalsePositive(t *testing.T) {
 	}
 }
 
+// `c+n` and `${c}${n}` copy c, so every retained result is real memory; charging only the growth let 200 MB through.
+func TestMemoryLimitConcatCopies(t *testing.T) {
+	runLimited(t, `let c="x".repeat(1e5),a=[];for(let n=0;n<200;n++)a.push(c+n)`, budget, 2*time.Second)
+	runLimited(t, "let c=\"x\".repeat(1e5),a=[];for(let n=0;n<200;n++)a.push(`${c}${n}`)", budget, 2*time.Second)
+}
+
+// Keeping every intermediate string of an append loop costs one buffer, not a copy each: the kept strings are prefixes
+// of it (real heap and charge agree). Only a concat from a string that is not the tail is a copy, charged in full.
+func TestMemoryLimitConcatAlias(t *testing.T) {
+	enter(t)
+	vm := New()
+	vm.SetMemoryLimit(budget)
+	if _, err := vm.RunString(`let s="x".repeat(1e5),keep=[];for(let n=0;n<300;n++){keep.push(s);s+="a"}`); err != nil {
+		t.Fatal(err)
+	}
+	if u := vm.MemoryUsage(); u > 400<<10 { // base + first copy + buffer = ~300 KB; a copy per push would be 30 MB
+		t.Fatalf("aliased append loop charged %d", u)
+	}
+	runLimited(t, `let s="x".repeat(1e5),keep=[];for(let n=0;n<1e5;n++){keep.push(s);s+="x".repeat(64)}`, budget, 2*time.Second)
+	runLimited(t, `let s="x".repeat(1e5);s+="1";s+="2";const p=s;s+="3";const k=[];for(let n=0;n<200;n++)k.push(p+n)`, budget, 2*time.Second)
+}
+
+// An append writes only past the tail, so no string that exists changes, and a second append from the same prefix copies.
+func TestConcatBufferNoMutation(t *testing.T) {
+	for _, ch := range []string{"x", "é"} { // ASCII buffer, UTF-16 buffer
+		enter(t)
+		vm := New()
+		vm.SetMemoryLimit(4 * mib)
+		_, err := vm.RunString(`var J=(...x)=>x.join(""), base="` + ch + `".repeat(1500);
+var s=base+"1"; s+="2"; s+="3";  // the first two copy and start a buffer, the third appends in place
+var p=s, X=J(base,"123");
+var a=p+"A", c=a+"C";            // in-place chain from the tail
+var b=p+"B";                     // p is no longer the tail: a copy
+var d=p+p;                       // the right operand is the left's own buffer
+var e=c; e+=e;                   // the same, appended in place or grown
+var f=` + "`${c}|${a}|${p}`" + `;
+var ok1=p===X && a===J(X,"A") && b===J(X,"B") && c===J(X,"AC") && d===J(X,X) && e===J(X,"AC",X,"AC") && f===J(X,"AC","|",X,"A","|",X);
+for(let i=0;i<300;i++)e+="z".repeat(50);   // grows the buffer past its capacity
+var ok2=p===X && a===J(X,"A") && c===J(X,"AC") && e.startsWith(J(X,"AC",X,"AC","z"));`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, k := range []string{"ok1", "ok2"} {
+			if !vm.Get(k).ToBoolean() {
+				t.Fatalf("%q: %s false: an existing string changed", ch, k)
+			}
+		}
+		ptr := func(k string) uintptr { p, _ := strKey(vm.Get(k)); return p }
+		if ptr("p") != ptr("a") || ptr("a") != ptr("c") { // the in-place path really ran
+			t.Fatalf("%q: p, a, c should share one append buffer", ch)
+		}
+		if ptr("b") == ptr("p") || ptr("d") == ptr("p") || ptr("b") == ptr("a") {
+			t.Fatalf("%q: a fork from a non-tail string must copy", ch)
+		}
+	}
+}
+
 func TestMemoryLimitJSON(t *testing.T) {
 	runLimited(t, `JSON.stringify(new Array(1e5).fill("x".repeat(100)))`, budget, 2*time.Second)
 }

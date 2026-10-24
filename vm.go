@@ -1346,8 +1346,7 @@ func (_add) exec(vm *vm) {
 		if !isRightString {
 			rightString = right.toString()
 		}
-		vm.r.chargeConcat(leftString, rightString)
-		ret = leftString.Concat(rightString)
+		ret = vm.r.concat2(leftString, rightString)
 	} else {
 		switch left := left.(type) {
 		case valueInt:
@@ -5539,55 +5538,24 @@ type concatStrings int
 
 func (n concatStrings) exec(vm *vm) {
 	strs := vm.stack[vm.sp-int(n) : vm.sp]
-	length := 0
-	allAscii := true
 	for i, s := range strs {
 		switch s := s.(type) {
-		case asciiString:
-			length += s.Length()
-		case unicodeString:
-			length += s.Length()
-			allAscii = false
+		case asciiString, unicodeString:
 		case *importedString:
 			s.ensureScanned()
 			if s.u != nil {
 				strs[i] = s.u
-				length += s.u.Length()
-				allAscii = false
 			} else {
 				strs[i] = asciiString(s.s)
-				length += len(s.s)
 			}
 		default:
 			panic(unknownStringTypeErr(s))
 		}
 	}
 
-	maxLen, width := 0, int64(1)
-	for _, s := range strs {
-		maxLen = max(maxLen, s.(String).Length())
-	}
-	if !allAscii {
-		width = 2
-	}
-	vm.r.chargeMem(int64(length-maxLen) * width) // growth only, like _add
-
+	res := vm.r.concatStrs(strs) // charged, and appended in place when strs[0] is an append buffer's tail
 	vm.sp -= int(n) - 1
-	if allAscii {
-		var buf strings.Builder
-		buf.Grow(toStringLen(length))
-		for _, s := range strs {
-			buf.WriteString(string(s.(asciiString)))
-		}
-		vm.stack[vm.sp-1] = asciiString(buf.String())
-	} else {
-		var buf unicodeStringBuilder
-		buf.Grow(length)
-		for _, s := range strs {
-			buf.writeString(s.(String))
-		}
-		vm.stack[vm.sp-1] = buf.String()
-	}
+	vm.stack[vm.sp-1] = res
 	vm.pc++
 }
 

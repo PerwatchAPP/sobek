@@ -222,6 +222,7 @@ type Runtime struct {
 	memLimit, memUsed int64
 	memPaused         int // >0: chargeMem is off (internal await re-wrap only, never across user code)
 	ticks             uint32
+	cbuf              concatBufs // see memlimit_concat.go
 	nativeDepth       int
 	regexpTimeout     time.Duration
 }
