@@ -1346,6 +1346,7 @@ func (_add) exec(vm *vm) {
 		if !isRightString {
 			rightString = right.toString()
 		}
+		vm.r.chargeConcat(leftString, rightString)
 		ret = leftString.Concat(rightString)
 	} else {
 		switch left := left.(type) {
@@ -1451,6 +1452,7 @@ func (_mul) exec(vm *vm) {
 		}
 	case *valueBigInt:
 		if right, ok := right.(*valueBigInt); ok {
+			vm.r.chargeBigBits(float64((*big.Int)(left).BitLen() + (*big.Int)(right).BitLen()))
 			result = (*valueBigInt)(new(big.Int).Mul((*big.Int)(left), (*big.Int)(right)))
 			goto end
 		}
@@ -1483,6 +1485,7 @@ func (_exp) exec(vm *vm) {
 			if (*big.Int)(y).Cmp(big.NewInt(0)) < 0 {
 				panic(vm.r.newError(vm.r.getRangeError(), "exponent must be positive"))
 			}
+			vm.r.chargeBigExp((*big.Int)(x), (*big.Int)(y))
 			result = (*valueBigInt)(new(big.Int).Exp((*big.Int)(x), (*big.Int)(y), nil))
 			goto end
 		}
@@ -1822,6 +1825,7 @@ func (_sal) exec(vm *vm) {
 			if (*big.Int)(right).Sign() < 0 {
 				result = (*valueBigInt)(new(big.Int).Rsh((*big.Int)(left), n))
 			} else {
+				vm.r.chargeBigBits(float64((*big.Int)(left).BitLen()) + float64(n))
 				result = (*valueBigInt)(new(big.Int).Lsh((*big.Int)(left), n))
 			}
 			goto end
@@ -1851,6 +1855,7 @@ func (_sar) exec(vm *vm) {
 		if right, ok := right.(*valueBigInt); ok {
 			n := uint((*big.Int)(right).Uint64())
 			if (*big.Int)(right).Sign() < 0 {
+				vm.r.chargeBigBits(float64((*big.Int)(left).BitLen()) + float64(n))
 				result = (*valueBigInt)(new(big.Int).Lsh((*big.Int)(left), n))
 			} else {
 				result = (*valueBigInt)(new(big.Int).Rsh((*big.Int)(left), n))
@@ -2801,6 +2806,7 @@ func (_newObject) exec(vm *vm) {
 type newArray uint32
 
 func (l newArray) exec(vm *vm) {
+	vm.r.chargeValues(int64(l))
 	values := make([]Value, 0, l)
 	vm.push(vm.r.newArrayValues(values))
 	vm.pc++
@@ -2819,7 +2825,9 @@ func (_pushArrayItem) exec(vm *vm) {
 		return
 	}
 	val := vm.stack[vm.sp-1]
+	oldCap := cap(arr.values)
 	arr.values = append(arr.values, val)
+	vm.r.chargeValues(int64(cap(arr.values) - oldCap))
 	if val != nil {
 		arr.objCount++
 	}
@@ -2840,6 +2848,7 @@ func (_pushArraySpread) exec(vm *vm) {
 			vm.throw(vm.r.newError(vm.r.getRangeError(), "Invalid array length"))
 			return
 		}
+		vm.r.chargeMem(valueSize)
 		arr.values = append(arr.values, val)
 		arr.objCount++
 	})
@@ -2855,6 +2864,7 @@ func (_pushSpread) exec(vm *vm) {
 	vm.sp--
 	obj := vm.stack[vm.sp]
 	vm.r.getIterator(obj, nil).iterate(func(val Value) {
+		vm.r.chargeMem(valueSize)
 		vm.push(val)
 	})
 	vm.pc++
@@ -2872,10 +2882,11 @@ func (_newArrayFromIter) exec(vm *vm) {
 	vm.iterStack = vm.iterStack[:l]
 	if iter.iterator != nil {
 		iter.iterate(func(val Value) {
+			vm.r.chargeMem(valueSize)
 			values = append(values, val)
 		})
 	}
-	vm.push(vm.r.newArrayValues(values))
+	vm.push(vm.r.newArrayValuesPrepaid(values))
 	vm.pc++
 }
 
@@ -5551,6 +5562,15 @@ func (n concatStrings) exec(vm *vm) {
 			panic(unknownStringTypeErr(s))
 		}
 	}
+
+	maxLen, width := 0, int64(1)
+	for _, s := range strs {
+		maxLen = max(maxLen, s.(String).Length())
+	}
+	if !allAscii {
+		width = 2
+	}
+	vm.r.chargeMem(int64(length-maxLen) * width) // growth only, like _add
 
 	vm.sp -= int(n) - 1
 	if allAscii {

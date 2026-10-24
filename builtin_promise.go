@@ -188,6 +188,7 @@ func (r *Runtime) newPromiseResolveThenableJob(p *Promise, thenable Value, then 
 }
 
 func (r *Runtime) enqueuePromiseJob(job func()) {
+	r.chargeMem(memJob)
 	r.jobQueue = append(r.jobQueue, job)
 }
 
@@ -232,6 +233,7 @@ func (r *Runtime) newPromiseReactionJob(reaction *promiseReaction, argument Valu
 }
 
 func (r *Runtime) newPromise(proto *Object) *Promise {
+	r.chargeMem(memPromise)
 	o := &Object{runtime: r}
 
 	po := &Promise{}

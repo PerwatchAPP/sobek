@@ -48,6 +48,7 @@ func (o *setIterObject) next() Value {
 func (so *setObject) init() {
 	so.baseObject.init()
 	so.m = newOrderedMap(so.val.runtime.getHash())
+	so.m.r = so.val.runtime
 }
 
 func (so *setObject) exportType() reflect.Type {

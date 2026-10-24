@@ -155,9 +155,11 @@ func (r *Runtime) string_raw(call FunctionCall) Value {
 		return stringEmpty
 	}
 	var stringElements StringBuilder
+	var charged int64
 	nextIndex := int64(0)
 	numberOfSubstitutions := int64(len(call.Arguments) - 1)
 	for {
+		r.tick()
 		nextSeg := nilSafe(raw.self.getIdx(valueInt(nextIndex), nil)).toString()
 		stringElements.WriteString(nextSeg)
 		if nextIndex+1 == literalSegments {
@@ -166,6 +168,7 @@ func (r *Runtime) string_raw(call FunctionCall) Value {
 		if nextIndex < numberOfSubstitutions {
 			stringElements.WriteString(nilSafe(call.Arguments[nextIndex+1]).toString())
 		}
+		r.chargeBuilder(&stringElements, &charged)
 		nextIndex++
 	}
 }
@@ -253,6 +256,7 @@ func (r *Runtime) stringproto_concat(call FunctionCall) Value {
 	}
 
 	if allAscii {
+		r.chargeMem(int64(totalLen))
 		var buf strings.Builder
 		buf.Grow(toStringLen(totalLen))
 		for _, s := range strs {
@@ -261,6 +265,7 @@ func (r *Runtime) stringproto_concat(call FunctionCall) Value {
 		return asciiString(buf.String())
 	}
 
+	r.chargeMem(2 * int64(totalLen))
 	buf := make([]uint16, totalLen+1)
 	buf[0] = unistring.BOM
 	pos := 1
@@ -463,6 +468,7 @@ func (r *Runtime) stringproto_normalize(call FunctionCall) Value {
 		panic(r.newError(r.getRangeError(), "The normalization form should be one of NFC, NFD, NFKC, NFKD"))
 	}
 
+	r.chargeMem(strMemSize(s)) // ponytail: NFKD can expand the text, charged as 1x
 	switch s := s.(type) {
 	case asciiString:
 		return s
@@ -504,6 +510,7 @@ func (r *Runtime) _stringPad(call FunctionCall, start bool) Value {
 	remaining := toIntStrict(maxLength - stringLength)
 	if fillerUnicode == nil && strUnicode == nil {
 		fl := fillerAscii.Length()
+		r.chargeMem(maxLength)
 		var sb strings.Builder
 		sb.Grow(toIntStrict(maxLength))
 		if !start {
@@ -521,6 +528,7 @@ func (r *Runtime) _stringPad(call FunctionCall, start bool) Value {
 		}
 		return asciiString(sb.String())
 	}
+	r.chargeMem(2 * maxLength)
 	var sb unicodeStringBuilder
 	sb.Grow(toIntStrict(maxLength))
 	if !start {
@@ -566,16 +574,20 @@ func (r *Runtime) stringproto_repeat(call FunctionCall) Value {
 	num := toIntStrict(numInt)
 	a, u := devirtualizeString(s)
 	if u == nil {
+		total := safeMul(len(a), num)
+		r.chargeMem(int64(total))
 		var sb strings.Builder
-		sb.Grow(safeMul(len(a), num))
+		sb.Grow(total)
 		for i := 0; i < num; i++ {
 			sb.WriteString(string(a))
 		}
 		return asciiString(sb.String())
 	}
 
+	total := safeMul(u.Length(), num)
+	r.chargeMem(2 * int64(total))
 	var sb unicodeStringBuilder
-	sb.Grow(safeMul(u.Length(), num))
+	sb.Grow(total)
 	for i := 0; i < num; i++ {
 		sb.writeUnicodeString(u)
 	}
@@ -601,6 +613,7 @@ func (r *Runtime) stringReplace(s String, found []regexpResult, newstring String
 	a, u := devirtualizeString(s)
 
 	var buf StringBuilder
+	var charged int64
 
 	lastIndex := 0
 	lengthS := s.Length()
@@ -635,6 +648,7 @@ func (r *Runtime) stringReplace(s String, found []regexpResult, newstring String
 			}).toString()
 			buf.WriteString(replacement)
 			lastIndex = item.indexes[1]
+			r.chargeBuilder(&buf, &charged)
 		}
 	} else {
 		for _, item := range found {
@@ -669,12 +683,14 @@ func (r *Runtime) stringReplace(s String, found []regexpResult, newstring String
 				return stringEmpty
 			}, newstring, &buf)
 			lastIndex = item.indexes[1]
+			r.chargeBuilder(&buf, &charged)
 		}
 	}
 
 	if lastIndex != lengthS {
 		buf.WriteString(s.Substring(lastIndex, lengthS))
 	}
+	r.chargeBuilder(&buf, &charged)
 
 	return buf.String()
 }
@@ -988,6 +1004,7 @@ func (r *Runtime) stringproto_substring(call FunctionCall) Value {
 func (r *Runtime) stringproto_toLowerCase(call FunctionCall) Value {
 	r.checkObjectCoercible(call.This)
 	s := call.This.toString()
+	r.chargeMem(strMemSize(s))
 
 	return s.toLower()
 }
@@ -995,6 +1012,7 @@ func (r *Runtime) stringproto_toLowerCase(call FunctionCall) Value {
 func (r *Runtime) stringproto_toUpperCase(call FunctionCall) Value {
 	r.checkObjectCoercible(call.This)
 	s := call.This.toString()
+	r.chargeMem(strMemSize(s))
 
 	return s.toUpper()
 }

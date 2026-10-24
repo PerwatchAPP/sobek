@@ -18,7 +18,9 @@ import (
 const hex = "0123456789abcdef"
 
 func (r *Runtime) builtinJSON_parse(call FunctionCall) Value {
-	d := json.NewDecoder(strings.NewReader(call.Argument(0).toString().String()))
+	input := call.Argument(0).toString()
+	r.chargeMem(strMemSize(input))
+	d := json.NewDecoder(strings.NewReader(input.String()))
 
 	value, err := r.builtinJSON_decodeValue(d)
 	if errors.Is(err, io.EOF) {
@@ -80,6 +82,8 @@ func (r *Runtime) builtinJSON_decodeValue(d *json.Decoder) (Value, error) {
 }
 
 func (r *Runtime) builtinJSON_decodeObject(d *json.Decoder) (*Object, error) {
+	r.enterNative()
+	defer r.leaveNative()
 	object := r.NewObject()
 	for {
 		key, end, err := r.builtinJSON_decodeObjectKey(d)
@@ -117,6 +121,8 @@ func (r *Runtime) builtinJSON_decodeObjectKey(d *json.Decoder) (string, bool, er
 }
 
 func (r *Runtime) builtinJSON_decodeArray(d *json.Decoder) (*Object, error) {
+	r.enterNative()
+	defer r.leaveNative()
 	var arrayValue []Value
 	for {
 		tok, err := d.Token()
@@ -138,12 +144,15 @@ func (r *Runtime) builtinJSON_decodeArray(d *json.Decoder) (*Object, error) {
 }
 
 func (r *Runtime) builtinJSON_reviveWalk(reviver func(FunctionCall) Value, holder *Object, name Value) Value {
+	r.enterNative()
+	defer r.leaveNative()
 	value := nilSafe(holder.get(name, nil))
 
 	if object, ok := value.(*Object); ok {
 		if isArray(object) {
 			length := toLength(object.self.getStr("length", nil))
 			for index := int64(0); index < length; index++ {
+				r.tick()
 				name := asciiString(strconv.FormatInt(index, 10))
 				value := r.builtinJSON_reviveWalk(reviver, object, name)
 				if value == _undefined {
@@ -176,7 +185,15 @@ type _builtinJSON_stringifyContext struct {
 	replacerFunction func(FunctionCall) Value
 	gap, indent      string
 	buf              bytes.Buffer
+	charged          int // high-water mark of buf.Len() already charged
 	allAscii         bool
+}
+
+func (ctx *_builtinJSON_stringifyContext) charge() {
+	if n := ctx.buf.Len(); n > ctx.charged {
+		ctx.r.chargeMem(int64(n - ctx.charged))
+		ctx.charged = n
+	}
 }
 
 func (r *Runtime) builtinJSON_stringify(call FunctionCall) Value {
@@ -190,9 +207,11 @@ func (r *Runtime) builtinJSON_stringify(call FunctionCall) Value {
 		if isArray(replacer) {
 			length := toLength(replacer.self.getStr("length", nil))
 			seen := map[string]bool{}
+			r.chargeValues(length)
 			propertyList := make([]Value, length)
 			length = 0
 			for index := range propertyList {
+				r.tick()
 				var name string
 				value := replacer.self.getIdx(valueInt(int64(index)), nil)
 				switch v := value.(type) {
@@ -261,6 +280,8 @@ func (r *Runtime) builtinJSON_stringify(call FunctionCall) Value {
 	}
 
 	if ctx.do(call.Argument(0)) {
+		ctx.charge()
+		r.chargeMem(int64(ctx.buf.Len())) // buf.String() copies
 		if ctx.allAscii {
 			return asciiString(ctx.buf.String())
 		} else {
@@ -279,6 +300,7 @@ func (ctx *_builtinJSON_stringifyContext) do(v Value) bool {
 }
 
 func (ctx *_builtinJSON_stringifyContext) str(key Value, holder *Object) bool {
+	ctx.charge()
 	value := nilSafe(holder.get(key, nil))
 
 	switch value.(type) {
@@ -368,6 +390,8 @@ func (ctx *_builtinJSON_stringifyContext) str(key Value, holder *Object) bool {
 			ctx.buf.WriteString(value1.self.getStr("rawJSON", nil).String())
 			return true
 		}
+		ctx.r.enterNative()
+		defer ctx.r.leaveNative()
 		for _, object := range ctx.stack {
 			if value1.SameAs(object) {
 				ctx.r.typeErrorResult(true, "Converting circular structure to JSON")
@@ -413,6 +437,8 @@ func (ctx *_builtinJSON_stringifyContext) ja(array *Object) {
 	}
 
 	for i := int64(0); i < length; i++ {
+		ctx.r.tick()
+		ctx.r.chargeMem(memIter)
 		if !ctx.str(asciiString(strconv.FormatInt(i, 10)), array) {
 			ctx.buf.WriteString("null")
 		}

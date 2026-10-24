@@ -374,7 +374,9 @@ func (a *arrayObject) expand(idx uint32) bool {
 					}
 				}
 				tl := int(targetLen)
-				newValues := make([]Value, tl, growCap(tl, len(a.values), cap(a.values)))
+				newCap := growCap(tl, len(a.values), cap(a.values))
+				a.val.runtime.chargeValues(int64(newCap - cap(a.values)))
+				newValues := make([]Value, tl, newCap)
 				copy(newValues, a.values)
 				a.values = newValues
 			}

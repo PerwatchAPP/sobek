@@ -81,8 +81,10 @@ func (r *Runtime) createListFromArrayLike(a Value) []Value {
 		return arr.values
 	}
 	l := toLength(o.self.getStr("length", nil))
+	r.chargeValues(l)
 	res := make([]Value, 0, l)
 	for k := int64(0); k < l; k++ {
+		r.tick()
 		res = append(res, nilSafe(o.self.getIdx(valueInt(k), nil)))
 	}
 	return res

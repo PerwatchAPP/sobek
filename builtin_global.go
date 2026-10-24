@@ -90,6 +90,7 @@ func (r *Runtime) _encode(uriString String, unescaped *[256]bool) String {
 		return uriString
 	}
 
+	r.chargeMem(int64(l))
 	buf := make([]byte, l)
 	i := 0
 	reader = uriString.Reader()
@@ -240,16 +241,20 @@ func (r *Runtime) builtin_escape(call FunctionCall) Value {
 	s := call.Argument(0).toString()
 	var sb strings.Builder
 	l := s.Length()
+	rt := r
 	for i := 0; i < l; i++ {
 		r := s.CharAt(i)
 		if r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9' ||
 			r == '@' || r == '*' || r == '_' || r == '+' || r == '-' || r == '.' || r == '/' {
+			rt.chargeMem(1)
 			sb.WriteByte(byte(r))
 		} else if r <= 0xff {
+			rt.chargeMem(3)
 			sb.WriteByte('%')
 			sb.WriteByte(hexUpper[r>>4])
 			sb.WriteByte(hexUpper[r&0xf])
 		} else {
+			rt.chargeMem(6)
 			sb.WriteString("%u")
 			sb.WriteByte(hexUpper[r>>12])
 			sb.WriteByte(hexUpper[(r>>8)&0xf])

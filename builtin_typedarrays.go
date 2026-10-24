@@ -74,10 +74,11 @@ func (ctx *typedArraySortCtx) Swap(i, j int) {
 	ctx.ta.typedArray.swap(offset+i, offset+j)
 }
 
-func allocByteSlice(size int) (b []byte) {
+func (r *Runtime) allocByteSlice(size int) (b []byte) {
 	if size < 0 {
 		panic(rangeError(fmt.Sprintf("Invalid buffer size: %d", size)))
 	}
+	r.chargeMem(int64(size))
 	b = make([]byte, size)
 	return
 }
@@ -88,7 +89,7 @@ func (r *Runtime) builtin_newArrayBuffer(args []Value, newTarget *Object) *Objec
 	}
 	b := r._newArrayBuffer(r.getPrototypeFromCtor(newTarget, r.getArrayBuffer(), r.getArrayBufferPrototype()), nil)
 	if len(args) > 0 {
-		b.data = allocByteSlice(r.toIndex(args[0]))
+		b.data = r.allocByteSlice(r.toIndex(args[0]))
 	}
 	return b.val
 }
@@ -169,7 +170,7 @@ func (r *Runtime) arrayBufferCopyAndDetach(this, newLength Value) Value {
 		// Hand the existing bytes over to the new buffer instead of copying them.
 		data = b.data[:newByteLength]
 	} else {
-		data = allocByteSlice(newByteLength)
+		data = r.allocByteSlice(newByteLength)
 		copy(data, b.data)
 	}
 	b.detach()
@@ -1418,7 +1419,7 @@ func (r *Runtime) allocateTypedArray(newTarget *Object, length int, taCtor typed
 	buf := r._newArrayBuffer(r.getArrayBufferPrototype(), nil)
 	ta := taCtor(buf, 0, length, r.getPrototypeFromCtor(newTarget, nil, proto))
 	if length > 0 {
-		buf.data = allocByteSlice(length * ta.elemSize)
+		buf.data = r.allocByteSlice(length * ta.elemSize)
 	}
 	return ta
 }
@@ -1537,7 +1538,7 @@ func (r *Runtime) _newTypedArrayFromTypedArray(src *typedArrayObject, newTarget 
 	src.viewedArrayBuf.ensureNotDetached(true)
 	l := src.length
 
-	dst.viewedArrayBuf.data = allocByteSlice(safeMul(l, dst.elemSize))
+	dst.viewedArrayBuf.data = r.allocByteSlice(safeMul(l, dst.elemSize))
 	src.viewedArrayBuf.ensureNotDetached(true)
 	if src.defaultCtor == dst.defaultCtor {
 		copy(dst.viewedArrayBuf.data, src.viewedArrayBuf.data[src.offset*src.elemSize:])

@@ -49,6 +49,7 @@ func (o *mapIterObject) next() Value {
 func (mo *mapObject) init() {
 	mo.baseObject.init()
 	mo.m = newOrderedMap(mo.val.runtime.getHash())
+	mo.m.r = mo.val.runtime
 }
 
 func (mo *mapObject) exportType() reflect.Type {

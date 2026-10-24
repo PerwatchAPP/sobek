@@ -29,6 +29,7 @@ func (r *Runtime) newRegexpObject(proto *Object) *regexpObject {
 func (r *Runtime) newRegExpp(pattern *regexpPattern, patternStr String, proto *Object) *regexpObject {
 	o := r.newRegexpObject(proto)
 
+	r.applyRegexpTimeout(pattern)
 	o.pattern = pattern
 	o.source = patternStr
 
@@ -465,6 +466,7 @@ func (r *Runtime) regexpproto_compile(call FunctionCall) Value {
 		if err != nil {
 			panic(r.newSyntaxError(err.Error()))
 		}
+		r.applyRegexpTimeout(pattern)
 		this.pattern = pattern
 		this.source = source
 	exit:
@@ -1021,6 +1023,8 @@ func (r *Runtime) regexpproto_stdSplitterGeneric(splitter *Object, s String, lim
 				}
 				numberOfCaptures := max(toLength(z.self.getStr("length", nil))-1, 0)
 				for i := int64(1); i <= numberOfCaptures; i++ {
+					r.tick()
+					r.chargeMem(valueSize)
 					a = append(a, nilSafe(z.self.getIdx(valueInt(i), nil)))
 					if int64(len(a)) == lim {
 						return r.newArrayValues(a)
@@ -1184,7 +1188,9 @@ func (r *Runtime) regexpproto_stdReplacerGeneric(rxObj *Object, s, replaceStr St
 	lengthS := s.Length()
 	nextSourcePosition := 0
 	var resultBuf StringBuilder
+	var charged int64
 	for _, result := range results {
+		r.chargeBuilder(&resultBuf, &charged)
 		obj := r.toObject(result)
 		nCaptures := max(toLength(obj.self.getStr("length", nil))-1, 0)
 		matched := nilSafe(obj.self.getIdx(valueInt(0), nil)).toString()
@@ -1192,12 +1198,16 @@ func (r *Runtime) regexpproto_stdReplacerGeneric(rxObj *Object, s, replaceStr St
 		position := toIntStrict(max(min(nilSafe(obj.self.getStr("index", nil)).ToInteger(), int64(lengthS)), 0))
 		var captures []Value
 		if rcall != nil {
+			r.chargeValues(nCaptures + 3)
 			captures = make([]Value, 0, nCaptures+3)
 		} else {
+			r.chargeValues(nCaptures + 1)
 			captures = make([]Value, 0, nCaptures+1)
 		}
 		captures = append(captures, matched)
 		for n := int64(1); n <= nCaptures; n++ {
+			r.tick()
+			r.chargeMem(valueSize)
 			capN := nilSafe(obj.self.getIdx(valueInt(n), nil))
 			if capN != _undefined {
 				capN = capN.ToString()
@@ -1249,6 +1259,7 @@ func (r *Runtime) regexpproto_stdReplacerGeneric(rxObj *Object, s, replaceStr St
 	if nextSourcePosition < lengthS {
 		resultBuf.WriteString(s.Substring(nextSourcePosition, lengthS))
 	}
+	r.chargeBuilder(&resultBuf, &charged)
 	return resultBuf.String()
 }
 
