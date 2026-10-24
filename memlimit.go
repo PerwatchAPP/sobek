@@ -148,12 +148,6 @@ func (r *Runtime) enterNative() {
 
 func (r *Runtime) leaveNative() { r.nativeDepth-- }
 
-// chargeConcat charges only the growth of a concatenation (total - the larger part), so an `s += x` loop costs
-// O(total), not O(n^2). ponytail: a mixed ASCII/UTF-16 pair widens the ASCII side, under-counted by <= 2x.
-func (r *Runtime) chargeConcat(a, b String) {
-	r.chargeMem(min(strMemSize(a), strMemSize(b)))
-}
-
 // memCap is the memory held by the saved stacks of a suspended generator/async frame.
 func (e *execCtx) memCap() int64 {
 	return int64(cap(e.stack))*valueSize + int64(cap(e.refStack))*valueSize +
