@@ -726,9 +726,41 @@ func (ar *asyncRunner) step(res Value, done bool, ex *Exception) {
 		return
 	}
 
-	// await
-	promise := r.promiseResolve(r.getPromise(), res)
-	promise.self.(*Promise).addReactions(&promiseReaction{
+	// await: promiseResolve(%Promise%, res) inlined so the memory pause (internal re-wrap garbage) never spans a
+	// property read: the `constructor` and `then` getters are user code and stay charged. A throwing `constructor`
+	// getter rejects the await (surfacing there one tick later than the spec) instead of escaping step().
+	var promise *Object
+	var thrown *Exception
+	if obj, ok := res.(*Object); ok {
+		if _, ok := obj.self.(*Promise); ok {
+			var ctor Value
+			thrown = r.vm.try(func() { ctor = nilSafe(obj.self.getStr("constructor", nil)) })
+			if thrown == nil && ctor.SameAs(r.getPromise()) {
+				promise = obj
+			}
+		}
+	}
+	if promise == nil {
+		pcap := r.newAwaitCapability()
+		if thrown != nil {
+			pcap.reject(thrown.val)
+		} else {
+			pcap.resolve(res)
+		}
+		promise = pcap.promise
+	}
+	ar.addAwaitReactions(promise.self.(*Promise))
+}
+
+// newAwaitCapability creates the intrinsic capability for an await's re-wrap; no user code runs inside the pause.
+func (r *Runtime) newAwaitCapability() *promiseCapability {
+	defer r.pauseMem()()
+	return r.newPromiseCapability(r.getPromise())
+}
+
+func (ar *asyncRunner) addAwaitReactions(p *Promise) {
+	defer ar.f.runtime.pauseMem()()
+	p.addReactions(&promiseReaction{
 		typ:         promiseReactionFulfill,
 		handler:     &jobCallback{callback: ar.onFulfilled},
 		asyncRunner: ar,
@@ -854,6 +886,7 @@ func (g *generator) step() (res Value, resultType resultType, ex *Exception) {
 
 	if ym, ok := res.(*yieldMarker); ok {
 		resultType = ym.resultType
+		capBefore := g.ctx.memCap()
 		g.ctx = execCtx{}
 		vm.pc = -vm.pc + 1
 		if res != yieldEmpty {
@@ -862,6 +895,8 @@ func (g *generator) step() (res Value, resultType resultType, ex *Exception) {
 			res = nil
 		}
 		vm.suspend(&g.ctx, g.tryStackLen, g.iterStackLen, g.refStackLen)
+		// only growth over the previous suspension counts: a loop that yields/awaits with a same-sized stack retains nothing
+		vm.r.chargeMem(g.ctx.memCap() - capBefore)
 		vm.sp = vm.sb - 1
 		vm.callStack = vm.callStack[:len(vm.callStack)-1] // remove the frame with pc == -2, as ret would do
 	}

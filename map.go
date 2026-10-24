@@ -12,6 +12,7 @@ type mapEntry struct {
 }
 
 type orderedMap struct {
+	r                   *Runtime // charged per new entry; nil for symbol-keyed property maps
 	hash                *maphash.Hash
 	hashTable           map[uint64]*mapEntry
 	iterFirst, iterLast *mapEntry
@@ -26,6 +27,9 @@ type orderedMapIter struct {
 func (m *orderedMap) insert(key, value Value, h uint64, hPrev *mapEntry) {
 	if key == _negativeZero {
 		key = intToValue(0)
+	}
+	if m.r != nil {
+		m.r.chargeMem(memEntry)
 	}
 	entry := &mapEntry{key: key, value: value}
 	if hPrev == nil {

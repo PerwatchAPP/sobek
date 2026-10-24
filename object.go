@@ -277,6 +277,9 @@ func (f ConstructorCall) Argument(idx int) Value {
 }
 
 func (o *baseObject) init() {
+	if o.val != nil && o.val.runtime != nil { // not yet set for objects built before a runtime exists
+		o.val.runtime.chargeMem(memObject)
+	}
 	o.values = make(map[unistring.String]Value)
 }
 
@@ -811,6 +814,9 @@ func (o *baseObject) defineOwnPropertySym(s *Symbol, descr PropertyDescriptor, t
 
 func (o *baseObject) _put(name unistring.String, v Value) {
 	if _, exists := o.values[name]; !exists {
+		if o.val != nil && o.val.runtime != nil { // objects built before a runtime exists have none
+			o.val.runtime.chargeMem(memProp)
+		}
 		names := copyNamesIfNeeded(o.propNames, 1)
 		o.propNames = append(names, name)
 	}

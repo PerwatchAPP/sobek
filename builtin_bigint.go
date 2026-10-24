@@ -245,6 +245,7 @@ func (r *Runtime) bigint_asIntN(call FunctionCall) Value {
 	}
 	bigint := toBigInt(call.Argument(1))
 
+	r.chargeBigBits(float64(bits))
 	twoToBits := new(big.Int).Lsh(big.NewInt(1), uint(bits))
 	mod := new(big.Int).Mod((*big.Int)(bigint), twoToBits)
 	if bits > 0 && mod.Cmp(new(big.Int).Lsh(big.NewInt(1), uint(bits-1))) >= 0 {
@@ -263,6 +264,7 @@ func (r *Runtime) bigint_asUintN(call FunctionCall) Value {
 		panic(r.NewTypeError("Invalid value: not (convertible to) a safe integer"))
 	}
 	bigint := (*big.Int)(toBigInt(call.Argument(1)))
+	r.chargeBigBits(float64(bits))
 	ret := new(big.Int).Mod(bigint, new(big.Int).Lsh(big.NewInt(1), uint(bits)))
 	return (*valueBigInt)(ret)
 }

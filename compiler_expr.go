@@ -2457,6 +2457,31 @@ func (c *compiler) emitConst(expr compiledExpr, putOnStack bool) {
 	}
 }
 
+// constEvalLimit bounds one compile-time constant evaluation. The private evalVM has no script budget and no watchdog, so
+// `1n<<(10n**12n)` would otherwise allocate 125 GB inside Compile() before the script ever runs. Over the limit the
+// expression throws a RangeError when it executes, like V8's "Maximum BigInt size exceeded".
+const constEvalLimit = 8 << 20
+
+func (c *compiler) runConst() (ex *Exception) {
+	vm := c.evalVM
+	vm.r.SetMemoryLimit(constEvalLimit)
+	vm.r.memUsed = 0
+	defer func() {
+		if x := recover(); x != nil {
+			if ie, ok := x.(*InterruptedError); ok {
+				if _, ok := ie.Value().(*MemoryLimitError); ok {
+					vm.sp = 0
+					vm.r.memUsed = 0 // creating the error is charged too
+					ex = &Exception{val: vm.r.newError(vm.r.getRangeError(), "Maximum BigInt size exceeded")}
+					return
+				}
+			}
+			panic(x)
+		}
+	}()
+	return vm.runTry()
+}
+
 func (c *compiler) evalConst(expr compiledExpr) (Value, *Exception) {
 	if expr, ok := expr.(*compiledLiteral); ok {
 		return expr.val, nil
@@ -2477,7 +2502,7 @@ func (c *compiler) evalConst(expr compiledExpr) (Value, *Exception) {
 	savedPc := len(c.p.code)
 	expr.emitGetter(true)
 	c.evalVM.pc = savedPc
-	ex := c.evalVM.runTry()
+	ex := c.runConst()
 	if createdPrg {
 		c.evalVM.prg = nil
 		c.evalVM.pc = 0

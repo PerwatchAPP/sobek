@@ -141,6 +141,7 @@ func (a *sparseArrayObject) getOwnPropIdx(idx valueInt) Value {
 
 func (a *sparseArrayObject) add(idx uint32, val Value) {
 	i := a.findIdx(idx)
+	a.val.runtime.chargeMem(sparseItemSize)
 	a.items = append(a.items, sparseArrayItem{})
 	copy(a.items[i+1:], a.items[i:])
 	a.items[i] = sparseArrayItem{
@@ -177,6 +178,7 @@ func (a *sparseArrayObject) _setOwnIdx(idx uint32, val Value, throw bool) bool {
 		}
 
 		if a.expand(idx) {
+			a.val.runtime.chargeMem(sparseItemSize)
 			a.items = append(a.items, sparseArrayItem{})
 			copy(a.items[i+1:], a.items[i:])
 			a.items[i] = sparseArrayItem{

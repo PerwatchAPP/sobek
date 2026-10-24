@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf16"
 
 	"github.com/dlclark/regexp2/v2"
@@ -67,6 +68,8 @@ type regexpPattern struct {
 
 	regexpWrapper  *regexpWrapper
 	regexp2Wrapper *regexp2Wrapper
+
+	timeout time.Duration // per-match bound for regexp2 (see Runtime.SetRegExpTimeout)
 }
 
 type regexpResult struct {
@@ -118,7 +121,21 @@ func (p *regexpPattern) createRegexp2() {
 		// At this point the regexp should have been successfully converted to re2, if it fails now, it's a bug.
 		panic(err)
 	}
+	if p.timeout > 0 { // 0 would mean "time out immediately" to regexp2, not "none"
+		rx.rx.MatchTimeout = p.timeout // fresh, unshared Regexp: safe to set in place
+	}
 	p.regexp2Wrapper = rx
+}
+
+// applyRegexpTimeout binds the runtime's regexp2 timeout to p. A literal's compiled *regexp2.Regexp is shared by every
+// runtime running the Program (regexp2Wrapper.clone keeps it), so it is copied, never mutated.
+func (r *Runtime) applyRegexpTimeout(p *regexpPattern) {
+	p.timeout = r.regexpTimeout
+	if p.timeout > 0 && p.regexp2Wrapper != nil {
+		cp := *p.regexp2Wrapper.rx
+		cp.MatchTimeout = p.timeout
+		p.regexp2Wrapper = &regexp2Wrapper{rx: &cp}
+	}
 }
 
 func buildUTF8PosMap(s unicodeString) (positionMap, string) {
@@ -204,6 +221,7 @@ func (p *regexpPattern) clone() *regexpPattern {
 		dotAll:     p.dotAll,
 		sticky:     p.sticky,
 		unicode:    p.unicode,
+		timeout:    p.timeout,
 	}
 	if p.regexpWrapper != nil {
 		ret.regexpWrapper = p.regexpWrapper.clone()
@@ -360,7 +378,7 @@ func (r *regexp2Wrapper) findAllSubmatchIndexUTF16(s String, start, limit int, s
 	if limit < 0 {
 		limit = len(runes) + 1
 	}
-	results := make([]regexpResult, 0, limit)
+	results := make([]regexpResult, 0, min(limit, 64)) // not limit: 48 B per rune of the subject, uncharged
 	for match != nil {
 		groups := match.Groups()
 
@@ -442,7 +460,7 @@ func (r *regexp2Wrapper) findAllSubmatchIndexUnicode(s unicodeString, start, lim
 	if limit < 0 {
 		limit = len(s) + 1
 	}
-	results := make([]regexpResult, 0, limit)
+	results := make([]regexpResult, 0, min(limit, 64)) // not limit: 48 B per char of the subject, uncharged
 	match, posMap, err := r.findUnicodeCached(s, start, false)
 	if err != nil {
 		panic(rangeError(err.Error()))

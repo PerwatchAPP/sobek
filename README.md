@@ -338,3 +338,36 @@ Since Sobek is a fork of Goja, we need to update Sobek when changes are made in 
 7. Review the changes and run tests
 8. Push the branch to `origin` and create a new PR with `git push`
 9. **Important: Use MERGE (not rebase or squash) in the PR** -- This preserves history and helps avoid future merge conflicts
+
+## Monitic patches
+
+This fork (`PerwatchAPP/sobek`, branch `feature/memory-limit`) adds resource limits so an embedder can run untrusted
+scripts. Public API:
+
+- `Runtime.SetMemoryLimit(bytes)` / `Runtime.MemoryUsage()`: a monotonic allocation budget (0 = unlimited, the upstream
+  behaviour). Allocations are charged BEFORE they happen and never credited back on GC, so it is an upper bound of what
+  the script allocated. Going over it ends the run with an uncatchable `*InterruptedError` whose `Value()` is a
+  `*MemoryLimitError`.
+- `Runtime.SetRegExpTimeout(d)`: bounds one match of a regexp2-backed pattern (backreferences, lookbehind); a timeout
+  throws a catchable `RangeError`. Go's RE2 path is linear and needs nothing.
+- `Interrupt()` also lands inside long built-ins (loops over a script-controlled length poll it every 4096 iterations),
+  and native recursion (JSON, `toString`/`join`, `flat`) deeper than 10 000 levels throws a `RangeError`.
+- The compiler folds constant expressions in a private VM; each fold is capped at 8 MiB (`constEvalLimit`), above which the
+  expression throws a `RangeError` when it runs (`1n<<(10n**12n)` must not allocate while compiling).
+
+The change is `memlimit.go` plus one-line `chargeMem` / `tick` / `enterNative` hooks in the built-ins, so upstream merges stay small.
+
+Patch rule: every allocation sized from `toLength` / `ToInteger` / `toIntStrict` is charged BEFORE the `make`, and every
+loop over such a length ticks and charges what it appends. Audit on every upstream merge and check each new hit:
+
+```shell
+grep -nE 'make\(|append\(' builtin_*.go | grep -v _test
+```
+
+Sync rule (never rebase or squash, see AGENTS.md):
+
+```shell
+git fetch upstream && git merge --no-ff upstream/main
+```
+
+then re-run `go test ./...` and `go test -run 'MemoryLimit|AwaitLoop|RegExpTimeout|Interrupt|NativeDepth' -race .`.

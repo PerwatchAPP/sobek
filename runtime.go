@@ -218,6 +218,12 @@ type Runtime struct {
 	// Stack for tracking objects currently being converted to string
 	// to detect and handle circular references
 	toStringStack []*Object
+
+	memLimit, memUsed int64
+	memPaused         int // >0: chargeMem is off (internal await re-wrap only, never across user code)
+	ticks             uint32
+	nativeDepth       int
+	regexpTimeout     time.Duration
 }
 
 type StackFrame struct {
@@ -597,6 +603,7 @@ func (r *Runtime) newGeneratorFunc(name unistring.String, length int, strict boo
 }
 
 func (r *Runtime) newClassFunc(name unistring.String, length int, proto *Object, derived bool) (f *classFuncObject) {
+	r.chargeMem(memFunc)
 	v := &Object{runtime: r}
 
 	f = &classFuncObject{}
@@ -612,6 +619,7 @@ func (r *Runtime) newClassFunc(name unistring.String, length int, proto *Object,
 }
 
 func (r *Runtime) initBaseJsFunction(f *baseJsFuncObject, strict bool) {
+	r.chargeMem(memFunc)
 	v := &Object{runtime: r}
 
 	f.class = classFunction
@@ -752,6 +760,7 @@ func (r *Runtime) newNativeFuncAndConstruct(v *Object, call func(call FunctionCa
 }
 
 func (r *Runtime) newNativeFunc(call func(FunctionCall) Value, name unistring.String, length int) *Object {
+	r.chargeMem(memFunc)
 	v := &Object{runtime: r}
 
 	f := &nativeFuncObject{
