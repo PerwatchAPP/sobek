@@ -25,6 +25,11 @@ func (r *Runtime) newArrayObject() *arrayObject {
 
 func setArrayValues(a *arrayObject, values []Value) *arrayObject {
 	a.val.runtime.chargeValues(int64(len(values)))
+	return setArrayValuesPrepaid(a, values)
+}
+
+// setArrayValuesPrepaid is for callers that already charged values BEFORE allocating it (charging again double-counts).
+func setArrayValuesPrepaid(a *arrayObject, values []Value) *arrayObject {
 	a.values = values
 	a.length = uint32(len(values))
 	a.objCount = len(values)
@@ -68,6 +73,10 @@ func relToIdx(rel, l int64) int64 {
 
 func (r *Runtime) newArrayValues(values []Value) *Object {
 	return setArrayValues(r.newArrayObject(), values).val
+}
+
+func (r *Runtime) newArrayValuesPrepaid(values []Value) *Object {
+	return setArrayValuesPrepaid(r.newArrayObject(), values).val
 }
 
 func (r *Runtime) newArrayLength(l int64) *Object {
@@ -373,7 +382,7 @@ func (r *Runtime) arrayproto_slice(call FunctionCall) Value {
 			r.chargeValues(count)
 			values := make([]Value, count)
 			copy(values, src.values[start:])
-			setArrayValues(dst, values)
+			setArrayValuesPrepaid(dst, values)
 			return a
 		}
 	}
@@ -430,7 +439,7 @@ func (r *Runtime) arrayproto_sort(call FunctionCall) Value {
 				a = append(a, nilSafe(o.self.getIdx(idx, nil)))
 			}
 		}
-		ar := r.newArrayValues(a)
+		ar := r.newArrayValuesPrepaid(a)
 		ctx := arraySortCtx{
 			obj:     ar.self,
 			compare: compareFn,
@@ -472,7 +481,7 @@ func (r *Runtime) arrayproto_splice(call FunctionCall) Value {
 			r.chargeValues(actualDeleteCount)
 			values := make([]Value, actualDeleteCount)
 			copy(values, src.values[actualStart:])
-			setArrayValues(dst, values)
+			setArrayValuesPrepaid(dst, values)
 		} else {
 			for k := int64(0); k < actualDeleteCount; k++ {
 				r.tick()
@@ -835,7 +844,7 @@ func (r *Runtime) arrayproto_map(call FunctionCall) Value {
 					values[k] = callbackFn(fc)
 				}
 			}
-			setArrayValues(arr, values)
+			setArrayValuesPrepaid(arr, values)
 			return a
 		}
 	}
@@ -1336,7 +1345,7 @@ func (r *Runtime) arrayproto_with(call FunctionCall) Value {
 			}
 			a = append(a, fromValue)
 		}
-		return r.newArrayValues(a)
+		return r.newArrayValuesPrepaid(a)
 	} else {
 		a := r.newArrayLength(length)
 		for k := int64(0); k < length; k++ {
@@ -1367,7 +1376,7 @@ func (r *Runtime) arrayproto_toReversed(call FunctionCall) Value {
 			fromValue := src.values[from]
 			a = append(a, fromValue)
 		}
-		return r.newArrayValues(a)
+		return r.newArrayValuesPrepaid(a)
 	} else {
 		a := r.newArrayLength(length)
 		for k := int64(0); k < length; k++ {
@@ -1414,7 +1423,7 @@ func (r *Runtime) arrayproto_toSorted(call FunctionCall) Value {
 		}
 	}
 
-	ar := r.newArrayValues(a)
+	ar := r.newArrayValuesPrepaid(a)
 	ctx := arraySortCtx{
 		obj:     ar.self,
 		compare: compareFn,
@@ -1455,7 +1464,7 @@ func (r *Runtime) arrayproto_toSpliced(call FunctionCall) Value {
 		if itemCount > 0 {
 			copy(values[actualStart:], call.Arguments[2:])
 		}
-		return r.newArrayValues(values)
+		return r.newArrayValuesPrepaid(values)
 	} else {
 		a := r.newArrayLength(newLength)
 		var i int64
@@ -1568,7 +1577,7 @@ func (r *Runtime) array_from(call FunctionCall) Value {
 						values = append(values, val)
 					})
 				}
-				setArrayValues(a, values)
+				setArrayValuesPrepaid(a, values)
 				return arr
 			}
 		}
@@ -1597,7 +1606,7 @@ func (r *Runtime) array_from(call FunctionCall) Value {
 					r.tick()
 					values[k] = nilSafe(arrayLike.self.getIdx(valueInt(k), nil))
 				}
-				setArrayValues(a, values)
+				setArrayValuesPrepaid(a, values)
 				return arr
 			}
 		}

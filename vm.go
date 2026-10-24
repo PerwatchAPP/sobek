@@ -2886,7 +2886,7 @@ func (_newArrayFromIter) exec(vm *vm) {
 			values = append(values, val)
 		})
 	}
-	vm.push(vm.r.newArrayValues(values))
+	vm.push(vm.r.newArrayValuesPrepaid(values))
 	vm.pc++
 }
 

@@ -565,3 +565,24 @@ func TestRegExpTimeoutSharedLiteralRace(t *testing.T) {
 	go run(0, "ab", "no error")
 	wg.Wait()
 }
+
+// Array results are charged once (before the allocation), not again when stored on the array object. slice/splice
+// pass on their slow path (the species array is `new Array(n)`, never a std fast-path target); map/with/to* are the
+// fast paths that doubled.
+func TestMemoryChargeSliceOnce(t *testing.T) {
+	const n = 10000
+	for _, op := range []string{`a.slice()`, `a.splice(0, 1e4)`, `a.map(x => x)`, `a.with(0, 1)`, `a.toReversed()`, `a.toSorted()`, `a.toSpliced(0, 0)`} {
+		enter(t)
+		vm := New()
+		if _, err := vm.RunString(`var a = []; for (var i = 0; i < 1e4; i++) a.push(0)`); err != nil {
+			t.Fatal(err)
+		}
+		before := vm.MemoryUsage()
+		if _, err := vm.RunString(op); err != nil {
+			t.Fatalf("%s: %v", op, err)
+		}
+		if d, want := vm.MemoryUsage()-before, n*valueSize; d < want || d > want*3/2 {
+			t.Errorf("%s charged %d bytes, want about %d (one charge)", op, d, want)
+		}
+	}
+}
