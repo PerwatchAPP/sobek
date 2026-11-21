@@ -355,6 +355,11 @@ scripts. Public API:
 - `Runtime.SetCodeGenDisabled(bool)` / `Runtime.CodeGenDisabled()`: disallows dynamic code generation from strings
   (`eval`, indirect `eval`, `Function`, `AsyncFunction`, `GeneratorFunction`, including `(() => {}).constructor`), throwing
   an `EvalError`. Useful for plugin/multi-tenant sandboxes.
+- `Runtime.SetMaxSteps(steps)` / `Runtime.StepCount()`: deterministic monotonic CPU step budget (0 = unlimited) counted
+  every 100 VM instructions and 4096 native loop ticks, aborting with an uncatchable `*InterruptedError` whose `Value()`
+  is `*StepLimitError`.
+- `Runtime.ExportJSON(v, maxBytes)`: serializes a JS value to JSON inside the VM (respecting memory limit, native depth,
+  and circular reference checks) and stops early if the output exceeds `maxBytes`.
 - `Interrupt()` also lands inside long built-ins (loops over a script-controlled length poll it every 4096 iterations),
   and native recursion (JSON, `toString`/`join`, `flat`) deeper than 10 000 levels throws a `RangeError`.
 - The compiler folds constant expressions in a private VM; each fold is capped at 8 MiB (`constEvalLimit`), above which the

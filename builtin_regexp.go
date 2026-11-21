@@ -260,6 +260,7 @@ func compileRegexp(patternStr, flags string) (p *regexpPattern, err error) {
 }
 
 func (r *Runtime) _newRegExp(patternStr String, flags string, proto *Object) *regexpObject {
+	r.chargeMul(int64(patternStr.Length()), 16)
 	pattern, err := compileRegexpFromValueString(patternStr, flags)
 	if err != nil {
 		panic(r.newSyntaxError(err.Error()))
@@ -420,6 +421,7 @@ func (r *Runtime) regexpproto_compile(call FunctionCall) Value {
 		if flagsVal != _undefined {
 			flags = flagsVal.toString().String()
 		}
+		r.chargeMul(int64(source.Length()), 16)
 		pattern, err = compileRegexpFromValueString(source, flags)
 		if err != nil {
 			panic(r.newSyntaxError(err.Error()))

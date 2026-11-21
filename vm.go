@@ -697,6 +697,7 @@ func (vm *vm) run() {
 			if atomic.LoadInt32(&globalProfiler.enabled) == 1 && !vm.runWithProfiler() {
 				return
 			}
+			vm.r.chargeSteps(100)
 			count = 100
 		} else {
 			count--

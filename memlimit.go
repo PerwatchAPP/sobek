@@ -17,6 +17,54 @@ func (e *MemoryLimitError) Error() string {
 	return fmt.Sprintf("memory limit exceeded: used %d of %d bytes", e.Used, e.Limit)
 }
 
+// StepLimitError is the value of the *InterruptedError that Run*() returns once the deterministic VM instruction /
+// native loop step budget set with SetMaxSteps is exceeded.
+type StepLimitError struct{ Limit, Used int64 }
+
+func (e *StepLimitError) Error() string {
+	return fmt.Sprintf("step limit exceeded: executed %d of %d steps", e.Used, e.Limit)
+}
+
+// SetMaxSteps sets a deterministic monotonic CPU step budget (0 = unlimited, the upstream behaviour). Steps are
+// accounted every 100 VM instructions and every 4096 native loop iterations, requiring no timers or goroutines.
+// Exceeding it aborts execution with an uncatchable *InterruptedError whose Value() is a *StepLimitError.
+func (r *Runtime) SetMaxSteps(steps int64) {
+	r.stepLimit = steps
+}
+
+// StepCount returns the VM/native steps executed so far (monotonic, never decreases).
+func (r *Runtime) StepCount() int64 {
+	return r.stepsUsed
+}
+
+// ExportJSON safely serializes v to UTF-8 JSON inside the runtime (respecting SetMemoryLimit, maxNativeDepth,
+// and circular reference detection) and aborts early if the encoded size exceeds maxBytes (> 0). Use this at the
+// host boundary instead of unchecked Export() when accepting values from untrusted plugins.
+func (r *Runtime) ExportJSON(v Value, maxBytes int64) ([]byte, error) {
+	if v == nil || IsUndefined(v) {
+		return []byte("null"), nil
+	}
+	var out []byte
+	err := r.runWrapped(func() {
+		ctx := _builtinJSON_stringifyContext{
+			r:        r,
+			allAscii: true,
+			maxBytes: maxBytes,
+		}
+		if ctx.do(v) {
+			ctx.charge()
+			out = make([]byte, ctx.buf.Len())
+			copy(out, ctx.buf.Bytes())
+		} else {
+			out = []byte("null")
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SetMemoryLimit sets a monotonic allocation budget in bytes (0 = unlimited, the upstream behaviour). Allocations are
 // charged before they happen and never credited back on GC, so the budget is an upper bound of what a script
 // allocated, not of what it retains. Going over it aborts the run with an uncatchable *InterruptedError whose Value()
@@ -163,10 +211,28 @@ func (r *Runtime) checkInterrupt() {
 	}
 }
 
+// chargeSteps accounts for n executed VM instructions or native loop ticks.
+func (r *Runtime) chargeSteps(n int64) {
+	if n <= 0 {
+		return
+	}
+	if r.stepsUsed > math.MaxInt64-n {
+		r.stepsUsed = math.MaxInt64
+	} else {
+		r.stepsUsed += n
+	}
+	if r.stepLimit > 0 && r.stepsUsed > r.stepLimit {
+		ex := &InterruptedError{iface: &StepLimitError{Limit: r.stepLimit, Used: r.stepsUsed}}
+		ex.stack = r.vm.captureStack(nil, 0)
+		panic(ex)
+	}
+}
+
 // tick is called once per iteration of a loop whose bound is script-controlled.
 func (r *Runtime) tick() {
 	r.ticks++
 	if r.ticks&4095 == 0 {
+		r.chargeSteps(4096)
 		r.checkInterrupt()
 	}
 }

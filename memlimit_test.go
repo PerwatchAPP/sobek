@@ -998,3 +998,149 @@ func TestMemoryLimitProxyOwnKeysAndBind(t *testing.T) {
 	runLimited(t, `const a=new Array(2e4).fill(1);let f=()=>{};const keep=[];for(let i=0;i<20;i++)keep.push(f.bind(null,...a))`, budget, 2*time.Second)
 	runLimited(t, `const a=new Array(5e4).fill(1);const keep=[];for(let i=0;i<10;i++)keep.push(a.filter(()=>true))`, budget, 2*time.Second)
 }
+
+func TestStepLimitDeterministic(t *testing.T) {
+	isStepLimit := func(err error) bool {
+		var ie *InterruptedError
+		var se *StepLimitError
+		return errors.As(err, &ie) && errors.As(err, &se)
+	}
+
+	for name, src := range map[string]string{
+		"infiniteLoop":   `try{for(;;){}}catch(e){"caught"}`,
+		"nativeIndexOf":  `try{Array.prototype.indexOf.call({length:2**53-1},1)}catch(e){"caught"}`,
+		"nativeIterator": `const r={done:false,value:1};try{Iterator.from({next:()=>r}).forEach(()=>{})}catch(e){"caught"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			enter(t)
+			vm := New()
+			vm.SetMaxSteps(20000)
+			start := time.Now()
+			_, err := vm.RunString(src)
+			if !isStepLimit(err) {
+				t.Fatalf("%s: want *InterruptedError{*StepLimitError}, got %T %v (steps=%d)", name, err, err, vm.StepCount())
+			}
+			if vm.StepCount() <= 20000 {
+				t.Fatalf("%s: StepCount=%d must exceed 20000", name, vm.StepCount())
+			}
+			if d := time.Since(start); d > slack(time.Second) {
+				t.Fatalf("%s: took %v", name, d)
+			}
+		})
+	}
+
+	// Normal loop under step limit completes cleanly.
+	enter(t)
+	vm := New()
+	vm.SetMaxSteps(50000)
+	v, err := vm.RunString(`let s=0;for(let i=0;i<100;i++)s+=i;s`)
+	if err != nil || v.ToInteger() != 4950 || vm.StepCount() == 0 {
+		t.Fatalf("got %v, %v, steps=%d", v, err, vm.StepCount())
+	}
+}
+
+func TestExportJSONBounded(t *testing.T) {
+	enter(t)
+	vm := New()
+	vm.SetMemoryLimit(4 * mib)
+
+	v, err := vm.RunString(`({tenant:"monitic",items:[1,2,3],ok:true})`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := vm.ExportJSON(v, 1024)
+	if err != nil || string(b) != `{"tenant":"monitic","items":[1,2,3],"ok":true}` {
+		t.Fatalf("ExportJSON = %q, %v", string(b), err)
+	}
+
+	// Oversized object aborts early with RangeError before consuming huge host memory.
+	bigVal, err := vm.RunString(`({data: new Array(10000).fill("abcdef")})`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := vm.ExportJSON(bigVal, 4096); err == nil || !strings.Contains(err.Error(), "ExportJSON output exceeds 4096 bytes") {
+		t.Fatalf("want ExportJSON cap error, got %v", err)
+	}
+
+	// Circular reference fails cleanly.
+	cyc, err := vm.RunString(`const a={};a.self=a;a`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := vm.ExportJSON(cyc, 4096); err == nil || !strings.Contains(err.Error(), "circular") {
+		t.Fatalf("want circular error, got %v", err)
+	}
+}
+
+func TestMemoryLimitRegExpCompile(t *testing.T) {
+	runLimited(t, `new RegExp("a".repeat(2e5))`, budget, 2*time.Second)
+	runLimited(t, `const r=/x/;r.compile("a".repeat(2e5))`, budget, 2*time.Second)
+}
+
+func BenchmarkPluginColdNewAndRun(b *testing.B) {
+	const src = `const ev=JSON.parse(eventJSON);JSON.stringify({host:ev.host,sum:ev.items.reduce((a,b)=>a+b,0)})`
+	b.ReportAllocs()
+	for b.Loop() {
+		vm := New()
+		vm.SetMemoryLimit(16 * mib)
+		vm.SetMaxSteps(500000)
+		vm.SetRegExpTimeout(100 * time.Millisecond)
+		vm.SetMaxCallStackSize(256)
+		vm.SetCodeGenDisabled(true)
+		_ = vm.Set("eventJSON", `{"host":"prod-web-01","items":[10,20,30,40]}`)
+		if _, err := vm.RunString(src); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkPluginPrecompiledProgram(b *testing.B) {
+	prg := MustCompile("plugin.js", `const ev=JSON.parse(eventJSON);JSON.stringify({host:ev.host,sum:ev.items.reduce((a,b)=>a+b,0)})`, true)
+	b.ReportAllocs()
+	for b.Loop() {
+		vm := New()
+		vm.SetMemoryLimit(16 * mib)
+		vm.SetMaxSteps(500000)
+		vm.SetRegExpTimeout(100 * time.Millisecond)
+		vm.SetMaxCallStackSize(256)
+		vm.SetCodeGenDisabled(true)
+		_ = vm.Set("eventJSON", `{"host":"prod-web-01","items":[10,20,30,40]}`)
+		if _, err := vm.RunProgram(prg); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// FuzzSandbox verifies that arbitrary untrusted JS never panics or crashes the Go process under full sandbox limits.
+func FuzzSandbox(f *testing.F) {
+	seeds := []string{
+		`1+2`,
+		`for(;;){}`,
+		`"x".repeat(1e7)`,
+		`let p={};for(let i=0;i<2000;i++)p=new Proxy(p,{});p.x`,
+		`(() => {}).constructor("return 1")()`,
+		`/^(a+)+$/.test("a".repeat(25)+"b")`,
+		`JSON.parse("[".repeat(500)+"]".repeat(500))`,
+		`1n << 999999999999n`,
+		`(function*(){for(let i=0;i<1e5;i++)yield i})().toArray()`,
+	}
+	for _, s := range seeds {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, src string) {
+		if len(src) > 4096 {
+			return
+		}
+		prg, err := Compile("fuzz.js", src, false)
+		if err != nil {
+			return
+		}
+		vm := New()
+		vm.SetMemoryLimit(1 * mib)
+		vm.SetMaxSteps(20000)
+		vm.SetRegExpTimeout(20 * time.Millisecond)
+		vm.SetMaxCallStackSize(64)
+		vm.SetCodeGenDisabled(true)
+		_, _ = vm.RunProgram(prg)
+	})
+}
