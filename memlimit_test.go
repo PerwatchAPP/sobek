@@ -701,7 +701,7 @@ func TestMemoryLimitBypassHardening(t *testing.T) {
 		"decodeURI":             `const s="%41".repeat(2e5);const r=[];for(let i=0;i<15;i++)r.push(decodeURIComponent(s))`,
 		"unescape":              `const s="%u00e9".repeat(1e5);const r=[];for(let i=0;i<15;i++)r.push(unescape(s))`,
 		"bigIntToString":        `const b=1n<<4000000n;const r=[];for(let i=0;i<6;i++)r.push(b.toString(2))`,
-		"bigIntFromString":      `const s="9".repeat(5e5);const r=[];for(let i=0;i<20;i++)r.push(BigInt(s))`,
+		"bigIntFromString":      `const s="0x"+"f".repeat(5e5);const r=[];for(let i=0;i<20;i++)r.push(BigInt(s))`,
 		"weakMapFlood":          `const ks=Array.from({length:200},()=>({}));for(let i=0;i<100;i++){const wm=new WeakMap();for(const k of ks)wm.set(k,i)}`,
 		"weakSetFlood":          `const ks=Array.from({length:200},()=>({}));for(let i=0;i<100;i++){const ws=new WeakSet();for(const k of ks)ws.add(k)}`,
 		"regexpMatchAll":        `"a".repeat(1e5).match(/a/g)`,
