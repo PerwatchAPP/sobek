@@ -185,12 +185,17 @@ type _builtinJSON_stringifyContext struct {
 	replacerFunction func(FunctionCall) Value
 	gap, indent      string
 	buf              bytes.Buffer
-	charged          int // high-water mark of buf.Len() already charged
+	charged          int   // high-water mark of buf.Len() already charged
+	maxBytes         int64 // >0: ExportJSON hard cap on encoded output size
 	allAscii         bool
 }
 
 func (ctx *_builtinJSON_stringifyContext) charge() {
-	if n := ctx.buf.Len(); n > ctx.charged {
+	n := ctx.buf.Len()
+	if ctx.maxBytes > 0 && int64(n) > ctx.maxBytes {
+		panic(ctx.r.newErrorf(ctx.r.getRangeError(), "ExportJSON output exceeds %d bytes", ctx.maxBytes))
+	}
+	if n > ctx.charged {
 		ctx.r.chargeMem(int64(n - ctx.charged))
 		ctx.charged = n
 	}
