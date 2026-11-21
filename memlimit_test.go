@@ -967,3 +967,34 @@ func TestPluginSandboxProfile(t *testing.T) {
 	}()
 	wg.Wait()
 }
+
+// Deep Proxy chains and Function.prototype.bind chains recurse in Go without touching vm.callStack;
+// enterNative must stop them with a catchable RangeError instead of a fatal Go stack overflow.
+func TestNativeDepthProxyChain(t *testing.T) {
+	const mkProxy = `let p={};for(let i=0;i<12000;i++)p=new Proxy(p,{});`
+	const mkFnProxy = `let f=()=>{};for(let i=0;i<12000;i++)f=new Proxy(f,{});`
+	for name, src := range map[string]string{
+		"get":    mkProxy + `p.x`,
+		"has":    mkProxy + `"x" in p`,
+		"set":    mkProxy + `p.x=1`,
+		"proto":  mkProxy + `Object.getPrototypeOf(p)`,
+		"apply":  mkFnProxy + `f()`,
+		"keys":   mkProxy + `Object.keys(p)`,
+		"delete": mkProxy + `delete p.x`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			nativeDepthRangeError(t, src)
+		})
+	}
+}
+
+func TestNativeDepthBindChain(t *testing.T) {
+	nativeDepthRangeError(t, `let f=function(){};for(let i=0;i<12000;i++)f=f.bind(null);f()`)
+	nativeDepthRangeError(t, `let F=function(){};for(let i=0;i<12000;i++)F=F.bind(null);new F()`)
+}
+
+func TestMemoryLimitProxyOwnKeysAndBind(t *testing.T) {
+	runLimited(t, `Object.keys(new Proxy({},{ownKeys:()=>new Proxy([],{get:(t,k)=>k==="length"?5e5:String(k)})}))`, budget, 3*time.Second)
+	runLimited(t, `const a=new Array(2e4).fill(1);let f=()=>{};const keep=[];for(let i=0;i<20;i++)keep.push(f.bind(null,...a))`, budget, 2*time.Second)
+	runLimited(t, `const a=new Array(5e4).fill(1);const keep=[];for(let i=0;i<10;i++)keep.push(a.filter(()=>true))`, budget, 2*time.Second)
+}
