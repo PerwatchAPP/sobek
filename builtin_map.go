@@ -57,6 +57,9 @@ func (mo *mapObject) exportType() reflect.Type {
 }
 
 func (mo *mapObject) export(ctx *objectExportCtx) interface{} {
+	if v, exists := ctx.get(mo.val); exists {
+		return v
+	}
 	m := make([][2]interface{}, mo.m.size)
 	ctx.put(mo.val, m)
 
@@ -276,7 +279,7 @@ func (r *Runtime) map_groupBy(call FunctionCall) Value {
 	o := r.builtin_newMap(nil, r.getMap())
 	mo := o.self.(*mapObject)
 	for i, key := range keys {
-		mo.m.set(key, r.newArrayValues(groups[i]))
+		mo.m.set(key, r.newArrayValuesPrepaid(groups[i]))
 	}
 	return o
 }

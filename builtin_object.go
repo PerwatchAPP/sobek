@@ -478,6 +478,9 @@ func (r *Runtime) objectproto_toString(call FunctionCall) Value {
 
 func (r *Runtime) objectproto_toLocaleString(call FunctionCall) Value {
 	toString := toMethod(r.getVStr(call.This, "toString"))
+	if toString == nil {
+		panic(r.NewTypeError("undefined is not a function"))
+	}
 	return toString(FunctionCall{This: call.This})
 }
 
@@ -623,8 +626,8 @@ func (r *Runtime) object_fromEntries(call FunctionCall) Value {
 		i1 := valueInt(1)
 
 		itemObj := r.toObject(nextValue)
-		k := itemObj.self.getIdx(i0, nil)
-		v := itemObj.self.getIdx(i1, nil)
+		k := nilSafe(itemObj.self.getIdx(i0, nil))
+		v := nilSafe(itemObj.self.getIdx(i1, nil))
 		key := toPropertyKey(k)
 
 		createDataPropertyOrThrow(result, key, v)
@@ -640,9 +643,11 @@ func (r *Runtime) groupBy(items, callback Value, propertyKeys bool) (keys []Valu
 	r.checkObjectCoercible(items)
 	fn := r.toCallable(callback)
 	m := newOrderedMap(r.getHash())
+	m.r = r
 	iter := r.getIterator(items, nil)
 	var k int64
 	iter.iterate(func(value Value) {
+		r.tick()
 		key := fn(FunctionCall{This: _undefined, Arguments: []Value{value, intToValue(k)}})
 		if propertyKeys {
 			key = toPropertyKey(key)
@@ -655,9 +660,11 @@ func (r *Runtime) groupBy(items, callback Value, propertyKeys bool) (keys []Valu
 		}
 		if idx := m.get(key); idx != nil {
 			i := idx.ToInteger()
+			r.chargeMem(valueSize)
 			groups[i] = append(groups[i], value)
 		} else {
 			m.set(key, intToValue(int64(len(groups))))
+			r.chargeMem(valueSize)
 			keys = append(keys, key)
 			groups = append(groups, []Value{value})
 		}
@@ -670,7 +677,7 @@ func (r *Runtime) object_groupBy(call FunctionCall) Value {
 	keys, groups := r.groupBy(call.Argument(0), call.Argument(1), true)
 	obj := r.newBaseObject(nil, classObject).val
 	for i, key := range keys {
-		createDataPropertyOrThrow(obj, key, r.newArrayValues(groups[i]))
+		createDataPropertyOrThrow(obj, key, r.newArrayValuesPrepaid(groups[i]))
 	}
 	return obj
 }

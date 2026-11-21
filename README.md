@@ -235,7 +235,9 @@ See [Runtime.ToValue()](https://pkg.go.dev/github.com/grafana/sobek#Runtime.ToVa
 Regular Expressions
 -------------------
 
-Sobek uses the embedded Go regexp library where possible, otherwise it falls back to [regexp2](https://github.com/dlclark/regexp2).
+Sobek uses the [regexp2](https://github.com/dlclark/regexp2) library. There are a few known incompatibilities, but they are
+mostly edge cases and should not affect general usage. See tc39_test.go for the list of exclusions. Any new
+incompatibilities should be reported as bugs.
 
 Exceptions
 ----------
@@ -348,8 +350,11 @@ scripts. Public API:
   behaviour). Allocations are charged BEFORE they happen and never credited back on GC, so it is an upper bound of what
   the script allocated. Going over it ends the run with an uncatchable `*InterruptedError` whose `Value()` is a
   `*MemoryLimitError`.
-- `Runtime.SetRegExpTimeout(d)`: bounds one match of a regexp2-backed pattern (backreferences, lookbehind); a timeout
-  throws a catchable `RangeError`. Go's RE2 path is linear and needs nothing.
+- `Runtime.SetRegExpTimeout(d)`: bounds one match of any RegExp pattern (upstream switched fully to regexp2); a timeout
+  throws a catchable `RangeError`.
+- `Runtime.SetCodeGenDisabled(bool)` / `Runtime.CodeGenDisabled()`: disallows dynamic code generation from strings
+  (`eval`, indirect `eval`, `Function`, `AsyncFunction`, `GeneratorFunction`, including `(() => {}).constructor`), throwing
+  an `EvalError`. Useful for plugin/multi-tenant sandboxes.
 - `Interrupt()` also lands inside long built-ins (loops over a script-controlled length poll it every 4096 iterations),
   and native recursion (JSON, `toString`/`join`, `flat`) deeper than 10 000 levels throws a `RangeError`.
 - The compiler folds constant expressions in a private VM; each fold is capped at 8 MiB (`constEvalLimit`), above which the
@@ -378,4 +383,6 @@ Sync rule (never rebase or squash, see AGENTS.md):
 git fetch upstream && git merge --no-ff upstream/main
 ```
 
-then re-run `go test ./...` and `go test -run 'MemoryLimit|AwaitLoop|RegExpTimeout|Interrupt|NativeDepth' -race .`.
+then re-run `go test ./...` and `go test -run 'MemoryLimit|AwaitLoop|RegExpTimeout|Interrupt|NativeDepth|OverflowAndStack|CodeGenDisabled|MemoryCleanupOnLeave|PluginSandboxProfile' -race .`.
+
+Plugin / `garble` note: when building with `garble`, Go struct field and method names are obfuscated so raw `ToValue(goStruct)` breaks JS property/method lookups. Use `SetFieldNameMapper(TagFieldNameMapper("json", false))` for DTO structs (struct tags are preserved by `garble`) and construct host APIs explicitly via `NewObject()` + `Set("fn", ...)` instead of exposing Go struct methods directly.

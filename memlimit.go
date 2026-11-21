@@ -31,29 +31,43 @@ func (r *Runtime) MemoryUsage() int64 {
 	return r.memUsed
 }
 
-// SetRegExpTimeout bounds one match of a regexp2-backed pattern (backreferences, lookbehind...); 0 = none. A timeout
-// throws a catchable RangeError. Patterns served by Go's linear RE2 engine need no bound. It applies to RegExp objects
-// created after the call.
+// SetRegExpTimeout bounds one match of any RegExp pattern (all patterns use regexp2); 0 = none. A timeout
+// throws a catchable RangeError. It applies to RegExp objects created after the call.
 func (r *Runtime) SetRegExpTimeout(d time.Duration) {
 	r.regexpTimeout = d
+}
+
+// SetCodeGenDisabled disallows dynamic code generation from strings (direct/indirect eval, Function, AsyncFunction,
+// GeneratorFunction, including via `(() => {}).constructor`). Calling any of them throws a catchable EvalError.
+func (r *Runtime) SetCodeGenDisabled(disabled bool) {
+	r.codeGenDisabled = disabled
+}
+
+// CodeGenDisabled reports whether dynamic code generation from strings is disallowed on this Runtime.
+func (r *Runtime) CodeGenDisabled() bool {
+	return r.codeGenDisabled
 }
 
 const (
 	maxNativeDepth = 10000
 	// ponytail: object/function/promise shell sizes are measured constants, not unsafe.Sizeof sums; revisit if the
 	// Go object layout changes.
-	memObject  = 128
-	memProp    = 64
-	memFunc    = 256
-	memEntry   = 96
-	memPromise = 256
+	memObject    = 128
+	memProp      = 64
+	memFunc      = 256
+	memEntry     = 96
+	memWeakEntry = 160 // map entry + two runtime.AddCleanup registrations
+	memPromise   = 256
 	// memIter is the per-iteration garbage (index string, boxing, call args) of a generic loop over a script-controlled
 	// length; without it a 1-byte-per-index buffer needs ~64M iterations to reach a 64 MiB budget.
 	memIter = 32
 	memJob  = 160
 )
 
-var valueSize = int64(unsafe.Sizeof(Value(nil)))
+var (
+	valueSize   = int64(unsafe.Sizeof(Value(nil)))
+	contextSize = int64(unsafe.Sizeof(context{}))
+)
 
 // chargeMem is called BEFORE an allocation of ~n bytes. Built-ins can't be interrupted (Interrupt only fires
 // between instructions), so the limit must panic here, inside the native call, like pushCtx does.
@@ -61,9 +75,10 @@ func (r *Runtime) chargeMem(n int64) {
 	if n <= 0 || r.memPaused > 0 {
 		return
 	}
-	r.memUsed += n
-	if r.memUsed < 0 {
+	if r.memUsed > math.MaxInt64-n {
 		r.memUsed = math.MaxInt64
+	} else {
+		r.memUsed += n
 	}
 	if r.memLimit > 0 && r.memUsed > r.memLimit {
 		ex := &InterruptedError{iface: &MemoryLimitError{Limit: r.memLimit, Used: r.memUsed}}
@@ -72,12 +87,31 @@ func (r *Runtime) chargeMem(n int64) {
 	}
 }
 
-func (r *Runtime) chargeValues(n int64) { r.chargeMem(n * valueSize) }
+// chargeMul charges count*elemSize with int64 overflow saturation so huge counts never wrap negative and bypass chargeMem.
+func (r *Runtime) chargeMul(count, elemSize int64) {
+	if count <= 0 || elemSize <= 0 {
+		return
+	}
+	if count > math.MaxInt64/elemSize {
+		r.chargeMem(math.MaxInt64)
+		return
+	}
+	r.chargeMem(count * elemSize)
+}
+
+func (r *Runtime) chargeValues(n int64) { r.chargeMul(n, valueSize) }
 
 // chargeBigBits charges a BigInt result of ~bits bits before it is computed: `2n**(2n**40n)` or `1n<<10n**12n` is one
 // allocation of many GiB, a fatal Go OOM rather than a panic. Add/Sub grow by a bit, so only Mul/Exp/shifts need it.
 func (r *Runtime) chargeBigBits(bits float64) {
-	r.chargeMem(int64(min(bits, 1<<60)/8) + 48)
+	if math.IsNaN(bits) || bits <= 0 {
+		return
+	}
+	if bits >= 1<<60 {
+		r.chargeMem(math.MaxInt64)
+		return
+	}
+	r.chargeMem(int64(bits/8) + 48)
 }
 
 func (r *Runtime) chargeBigExp(x, y *big.Int) {

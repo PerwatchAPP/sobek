@@ -242,6 +242,43 @@ func TestImportedString_CompareTo(t *testing.T) {
 	}
 }
 
+func TestImportedStringToIntegerAndFloat(t *testing.T) {
+	vm := New()
+	s := vm.ToValue("\u00a01")
+	if i := s.ToInteger(); i != 1 {
+		t.Fatalf("ToInteger() = %d, expected 1", i)
+	}
+	if f := s.ToFloat(); f != 1 {
+		t.Fatalf("ToFloat() = %v, expected 1", f)
+	}
+}
+
+func TestConcatStringEqualsIntegerAndFloat(t *testing.T) {
+	// Monitic routes JS `+` through memlimit_concat (eager/in-place, never lazy *concatString),
+	// so test both JS `+` semantics and *concatString directly via String.Concat.
+	vm := New()
+	s, err := vm.RunString(`"\u00a0".repeat(64)+1`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.Equals(intToValue(1)) {
+		t.Fatalf("Equals(1), expected true")
+	}
+	if !s.Equals(floatToValue(1)) {
+		t.Fatalf("Equals(1.0f), expected true")
+	}
+	cs, ok := newStringValue(strings.Repeat("\u00a0", 64)).Concat(asciiString("1")).(*concatString)
+	if !ok {
+		t.Fatalf("Not a concat String")
+	}
+	if !cs.Equals(intToValue(1)) {
+		t.Fatalf("concatString.Equals(1), expected true")
+	}
+	if !cs.Equals(floatToValue(1)) {
+		t.Fatalf("concatString.Equals(1.0f), expected true")
+	}
+}
+
 func TestStringCaseConversionLoneSurrogates(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -359,6 +396,14 @@ func TestStringMaxLen(t *testing.T) {
 	});
 
 	assert.throws(RangeError, () => {
+		'\u2605'.repeat(1e300); // count clamped to math.MaxInt
+	});
+
+	assert.throws(RangeError, () => {
+		'\u2605'.repeat(2**63);
+	});
+
+	assert.throws(RangeError, () => {
 		'a'.repeat(2**53-1);
 	});
 
@@ -369,6 +414,31 @@ func TestStringMaxLen(t *testing.T) {
 	assert.throws(RangeError, () => {
 		'\u2605'.padEnd(2**53-1);
 	});
+	`
+	testScriptWithTestLib(SCRIPT, _undefined, t)
+}
+
+func TestStringEqualsNumericString(t *testing.T) {
+	const SCRIPT = `
+	assert.sameValue("1.0" == 1, true, "decimal point");
+	assert.sameValue("1e1" == 10, true, "exponent");
+	assert.sameValue("-0" == 0, true, "negative zero");
+	assert.sameValue(" 1.0 " == 1, true, "surrounding white space");
+	assert.sameValue("1.5" == 1, false, "fraction");
+	assert.sameValue("abc" == 0, false, "NaN");
+	assert.sameValue("\u00a01.0" == 1, true, "Unicode string and integer");
+	assert.sameValue("\u00a01.5" == 1.5, true, "Unicode string and float");
+	assert.sameValue("\u00a01" == true, true, "Unicode string and boolean");
+	assert.sameValue("\u00a01" == 1n, true, "Unicode string and BigInt");
+	assert.sameValue("\u00a0abc" == 0, false, "Unicode NaN");
+	`
+	testScriptWithTestLib(SCRIPT, _undefined, t)
+}
+
+func TestUnicodeStringToIntegerAndFloat(t *testing.T) {
+	const SCRIPT = `
+	assert.sameValue(Math.abs("\u00a01"), 1, "ToFloat()");
+	assert.sameValue("abc".charAt("\u00a01"), "b", "ToInteger()");
 	`
 	testScriptWithTestLib(SCRIPT, _undefined, t)
 }

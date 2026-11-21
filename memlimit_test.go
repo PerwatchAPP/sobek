@@ -3,6 +3,7 @@ package sobek
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"runtime"
 	"runtime/debug"
@@ -642,4 +643,327 @@ func TestMemoryChargeSliceOnce(t *testing.T) {
 			t.Errorf("%s charged %d bytes, want about %d (one charge)", op, d, want)
 		}
 	}
+}
+
+func TestMemoryLimitImportedStringConcat(t *testing.T) {
+	enter(t)
+	vm := New()
+	vm.SetMemoryLimit(4 * mib)
+	vm.Set("seed", strings.Repeat("a", 2000))
+	v, err := vm.RunString(`let s = seed; for (let i = 0; i < 1000; i++) s += "b".repeat(100); s.length`)
+	if err != nil || v.ToInteger() != 102000 {
+		t.Fatalf("got %v, %v", v, err)
+	}
+	if u := vm.MemoryUsage(); u >= mib {
+		t.Fatalf("imported string append loop charged %d", u)
+	}
+}
+
+func TestMemoryLimitCreateHTML(t *testing.T) {
+	runLimited(t, `"x".link('"'.repeat(5e5))`, budget, 2*time.Second)
+	runLimited(t, `"x".repeat(1.2e6).bold()`, budget, 2*time.Second)
+}
+
+// Upstream switched fully to regexp2, so even patterns without backreferences can backtrack and must obey SetRegExpTimeout.
+func TestRegExpTimeoutPlainPattern(t *testing.T) {
+	enter(t)
+	vm := New()
+	vm.SetRegExpTimeout(200 * time.Millisecond)
+	start := time.Now()
+	v, err := vm.RunString(`try{/^(a+)+$/.test("a".repeat(30)+"b");"no error"}catch(e){e instanceof RangeError}`)
+	if err != nil || v.Export() != true {
+		t.Fatalf("want a caught RangeError, got %v %v", v, err)
+	}
+	if d := time.Since(start); d > slack(2*time.Second) {
+		t.Fatalf("took %v", d)
+	}
+}
+
+func TestMemoryLimitBypassHardening(t *testing.T) {
+	const gen500k = `(function*(){for(let i=0;i<5e5;i++)yield i})()`
+	const genOnes = `(function*(){for(let i=0;i<5e5;i++)yield 1})()`
+	for name, src := range map[string]string{
+		"iteratorToArray":       gen500k + `.toArray()`,
+		"objectGroupBy":         `Object.groupBy(` + gen500k + `,()=>"k")`,
+		"mapGroupBy":            `Map.groupBy(` + gen500k + `,()=>"k")`,
+		"typedArrayFromIter":    `Uint8Array.from(` + genOnes + `)`,
+		"typedArrayFilter":      `const a=new Uint8Array(1.2e6);a.filter(()=>true)`,
+		"uint8ToHex":            `const a=new Uint8Array(6e5);const r=[];for(let i=0;i<5;i++)r.push(a.toHex())`,
+		"uint8ToBase64":         `const a=new Uint8Array(6e5);const r=[];for(let i=0;i<5;i++)r.push(a.toBase64())`,
+		"uint8FromHex":          `const h="ab".repeat(6e5);const r=[];for(let i=0;i<5;i++)r.push(Uint8Array.fromHex(h))`,
+		"uint8FromBase64":       `const b="AAAA".repeat(2e5);const r=[];for(let i=0;i<5;i++)r.push(Uint8Array.fromBase64(b))`,
+		"stringReplaceAll":      `"a".repeat(1e5).replaceAll("a","b")`,
+		"stringSplitAscii":      `"a".repeat(2e5).split("")`,
+		"stringSplitUnicode":    `"é".repeat(1e5).split("")`,
+		"stringSplitUnicodeSep": `"é,".repeat(1e5).split(",")`,
+		"stringToWellFormed":    `const s="\uD800".repeat(3e5);const r=[];for(let i=0;i<6;i++)r.push(s.toWellFormed())`,
+		"stringFromCharCode":    `const a=new Array(2e5).fill(65);const r=[];for(let i=0;i<20;i++)r.push(String.fromCharCode.apply(null,a))`,
+		"decodeURI":             `const s="%41".repeat(2e5);const r=[];for(let i=0;i<15;i++)r.push(decodeURIComponent(s))`,
+		"unescape":              `const s="%u00e9".repeat(1e5);const r=[];for(let i=0;i<15;i++)r.push(unescape(s))`,
+		"bigIntToString":        `const b=1n<<4000000n;const r=[];for(let i=0;i<6;i++)r.push(b.toString(2))`,
+		"bigIntFromString":      `const s="9".repeat(5e5);const r=[];for(let i=0;i<20;i++)r.push(BigInt(s))`,
+		"weakMapFlood":          `const ks=Array.from({length:200},()=>({}));for(let i=0;i<100;i++){const wm=new WeakMap();for(const k of ks)wm.set(k,i)}`,
+		"weakSetFlood":          `const ks=Array.from({length:200},()=>({}));for(let i=0;i<100;i++){const ws=new WeakSet();for(const k of ks)ws.add(k)}`,
+		"regexpMatchAll":        `"a".repeat(1e5).match(/a/g)`,
+		"regexpMatchAllUnicode": `"é".repeat(5e4).match(/é/gu)`,
+		"evalCompileBomb":       `eval("1+".repeat(1.5e5)+"1")`,
+		"functionCtorBomb":      `new Function("return "+"1+".repeat(1.5e5)+"1")`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			runLimited(t, `try{`+src+`}catch(e){"caught"}`, budget, 4*time.Second)
+		})
+	}
+}
+
+func TestOverflowAndStackAttacks(t *testing.T) {
+	t.Run("chargeInt64Saturation", func(t *testing.T) {
+		enter(t)
+		vm := New()
+		vm.SetMemoryLimit(budget)
+
+		expectPanic := func(name string, fn func()) {
+			t.Helper()
+			defer func() {
+				x := recover()
+				ie, ok := x.(*InterruptedError)
+				if !ok {
+					t.Fatalf("%s: want *InterruptedError panic, got %T %v", name, x, x)
+				}
+				if _, ok := ie.Value().(*MemoryLimitError); !ok {
+					t.Fatalf("%s: want *MemoryLimitError, got %T %v", name, ie.Value(), ie.Value())
+				}
+			}()
+			fn()
+		}
+
+		expectPanic("chargeValuesOverflow", func() { vm.chargeValues(math.MaxInt64 / 2) })
+		vm.memUsed = 0
+		expectPanic("chargeMulOverflow", func() { vm.chargeMul(math.MaxInt64/2, 8) })
+		vm.memUsed = math.MaxInt64 - 10
+		expectPanic("chargeMemSaturation", func() { vm.chargeMem(100) })
+		if vm.MemoryUsage() != math.MaxInt64 {
+			t.Fatalf("expected saturated MaxInt64, got %d", vm.MemoryUsage())
+		}
+		vm.memUsed = 0
+		expectPanic("chargeBigBitsInf", func() { vm.chargeBigBits(math.Inf(1)) })
+		vm.memUsed = 0
+		vm.chargeBigBits(math.NaN()) // must be a safe no-op, not wrap negative
+		if vm.MemoryUsage() != 0 {
+			t.Fatalf("NaN bits charged %d", vm.MemoryUsage())
+		}
+	})
+
+	t.Run("maxIntLengthOverflow", func(t *testing.T) {
+		// 2**53-1 * 16 would overflow int64 without chargeMul saturation.
+		runLimited(t, `try{Array.prototype.sort.call({length:2**53-1})}catch(e){"caught"}`, budget, 2*time.Second)
+		runLimited(t, `try{BigInt.asUintN(2**50,1n)}catch(e){"caught"}`, budget, 2*time.Second)
+		runLimited(t, `try{let b=2n,e=2n**60n;b**e}catch(e){"caught"}`, budget, 2*time.Second)
+	})
+
+	t.Run("callStackOverflowWithLimit", func(t *testing.T) {
+		enter(t)
+		vm := New()
+		vm.SetMaxCallStackSize(256)
+		_, err := vm.RunString(`try{function f(){return f()} f()}catch(e){"caught"}`)
+		var so *StackOverflowError
+		if !errors.As(err, &so) {
+			t.Fatalf("want uncatchable *StackOverflowError, got %T %v", err, err)
+		}
+	})
+
+	t.Run("callStackOverflowBoundedByMemLimit", func(t *testing.T) {
+		// Even without SetMaxCallStackSize, infinite recursion must hit MemoryLimitError instead of Go OOM.
+		runLimited(t, `try{function f(a,b,c,d){return f(a,b,c,d)} f(1,2,3,4)}catch(e){"caught"}`, budget, 3*time.Second)
+	})
+
+	t.Run("valueStackSpreadOverflow", func(t *testing.T) {
+		runLimited(t, `Math.max(...(function*(){for(let i=0;i<5e5;i++)yield i})())`, budget, 3*time.Second)
+	})
+
+	t.Run("parserDeepNesting", func(t *testing.T) {
+		enter(t)
+		for _, pair := range [][2]string{{"(", ")"}, {"[", "]"}, {"{", "}"}} {
+			src := strings.Repeat(pair[0], 15000) + "1" + strings.Repeat(pair[1], 15000)
+			_, err := Compile("deep.js", src, true)
+			if err == nil || !strings.Contains(err.Error(), "Maximum nesting depth exceeded") {
+				t.Fatalf("pair %v: want nesting depth error, got %v", pair, err)
+			}
+		}
+	})
+
+	t.Run("hugeArrayAndTypedArrayLengths", func(t *testing.T) {
+		enter(t)
+		vm := New()
+		vm.SetMemoryLimit(budget)
+		for _, src := range []string{
+			`try{new Array(2**32);false}catch(e){e instanceof RangeError}`,
+			`try{1n<<(2n**100n);false}catch(e){e instanceof RangeError}`,
+			`try{2n**(2n**60n);false}catch(e){e instanceof RangeError}`,
+		} {
+			v, err := vm.RunString(src)
+			if err != nil || v.Export() != true {
+				t.Fatalf("%s: want caught RangeError, got %v %v", src, v, err)
+			}
+		}
+		// TypedArray / string repeat stop before allocating via uncatchable MemoryLimitError (or RangeError if length overflows).
+		runLimited(t, `try{new Uint8Array(2**40)}catch(e){"caught"}`, budget, 2*time.Second)
+		for _, src := range []string{`"a".repeat(2**40)`} {
+			vm2 := New()
+			vm2.SetMemoryLimit(budget)
+			v, err := vm2.RunString(`try{` + src + `;false}catch(e){e instanceof RangeError}`)
+			if !isMemLimit(err) && (err != nil || v.Export() != true) {
+				t.Fatalf("%s: want MemoryLimitError or RangeError, got %v %v", src, v, err)
+			}
+		}
+	})
+}
+
+func TestCodeGenDisabled(t *testing.T) {
+	enter(t)
+	vm := New()
+	vm.SetCodeGenDisabled(true)
+	if !vm.CodeGenDisabled() {
+		t.Fatal("CodeGenDisabled() must report true")
+	}
+
+	for name, src := range map[string]string{
+		"directEval":          `eval("1+1")`,
+		"indirectEval":        `(0, eval)("1+1")`,
+		"functionCtor":        `new Function("return 1")()`,
+		"arrowConstructor":    `(() => {}).constructor("return 1")()`,
+		"asyncConstructor":    `(async () => {}).constructor("return 1")()`,
+		"genConstructor":      `(function*(){}).constructor("yield 1")()`,
+		"functionCtorBigBody": `new Function("x".repeat(1e7))`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			v, err := vm.RunString(`try{` + src + `;"allowed"}catch(e){e instanceof EvalError}`)
+			if err != nil || v.Export() != true {
+				t.Fatalf("%s: want caught EvalError, got %v %v", name, v, err)
+			}
+		})
+	}
+
+	// Normal JS execution remains unaffected.
+	v, err := vm.RunString(`const f = x => x * 2; JSON.parse('{"v":21}').v + f(10)`)
+	if err != nil || v.ToInteger() != 41 {
+		t.Fatalf("normal code failed with codegen disabled: %v %v", v, err)
+	}
+
+	// Re-enabling works.
+	vm.SetCodeGenDisabled(false)
+	v, err = vm.RunString(`eval("20 + 22")`)
+	if err != nil || v.ToInteger() != 42 {
+		t.Fatalf("re-enabled eval failed: %v %v", v, err)
+	}
+}
+
+func TestInterruptHardening(t *testing.T) {
+	t.Run("iteratorForEach", func(t *testing.T) {
+		interruptsWithin(t, `const r={done:false,value:1};Iterator.from({next:()=>r}).forEach(()=>{})`)
+	})
+	t.Run("iteratorDropInfinity", func(t *testing.T) {
+		interruptsWithin(t, `const r={done:false,value:1};Iterator.from({next:()=>r}).drop(Infinity).next()`)
+	})
+}
+
+func TestMemoryCleanupOnLeave(t *testing.T) {
+	enter(t)
+	vm := New()
+	vm.SetMemoryLimit(4 * mib)
+	if _, err := vm.RunString(`let s="a".repeat(2000);for(let i=0;i<200;i++)s+="b".repeat(50);s.length`); err != nil {
+		t.Fatal(err)
+	}
+	if len(vm.cbuf.a) != 0 || len(vm.cbuf.u) != 0 || vm.vm.stack != nil {
+		t.Fatalf("leave() must clear concat buffers and vm stack: cbuf=%+v stack=%d", vm.cbuf, len(vm.vm.stack))
+	}
+
+	// Abrupt exit on MemoryLimitError also clears buffers and stack.
+	vm2 := runLimited(t, `let s="a".repeat(2000);for(let i=0;i<1e5;i++)s+="b".repeat(1000)`, budget, 2*time.Second)
+	if len(vm2.cbuf.a) != 0 || len(vm2.cbuf.u) != 0 || vm2.vm.stack != nil {
+		t.Fatalf("leaveAbrupt() must clear concat buffers and vm stack: cbuf=%+v stack=%d", vm2.cbuf, len(vm2.vm.stack))
+	}
+
+	// Large regexp subjects must not stay pinned in regexp2MatchCache.
+	vm3 := New()
+	if _, err := vm3.RunString(`var rx = /abc/g; rx.exec("x".repeat(70000) + "abc")`); err != nil {
+		t.Fatal(err)
+	}
+	rxObj := vm3.Get("rx").(*Object).self.(*regexpObject)
+	if rxObj.pattern.regexp2Wrapper.cache != nil {
+		t.Fatalf("large subject (>64 KiB) must not be pinned in regexp2MatchCache")
+	}
+}
+
+// Simulates concurrent Monitic customer plugins sharing compiled programs under full sandbox hardening.
+func TestPluginSandboxProfile(t *testing.T) {
+	enter(t)
+	goodPrg := MustCompile("good-plugin.js", `
+		const payload = JSON.parse(eventJSON);
+		const total = payload.items.reduce((a, b) => a + b, 0);
+		JSON.stringify({ tenant: payload.tenant, total });
+	`, true)
+	evilMem := MustCompile("evil-mem.js", `(function*(){for(let i=0;i<1e6;i++)yield i})().toArray()`, true)
+	evilEval := MustCompile("evil-eval.js", `(() => {}).constructor("return 1")()`, true)
+	evilReDoS := MustCompile("evil-redos.js", `/^(a+)+$/.test("a".repeat(30) + "b")`, true)
+	evilStack := MustCompile("evil-stack.js", `function f(){return f()} f()`, true)
+
+	newSandbox := func() *Runtime {
+		vm := New()
+		vm.SetMemoryLimit(4 * mib)
+		vm.SetRegExpTimeout(150 * time.Millisecond)
+		vm.SetMaxCallStackSize(256)
+		vm.SetCodeGenDisabled(true)
+		return vm
+	}
+
+	var wg sync.WaitGroup
+	for i := range 4 {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			vm := newSandbox()
+			vm.Set("eventJSON", fmt.Sprintf(`{"tenant":"t-%d","items":[10,20,30]}`, id))
+			v, err := vm.RunProgram(goodPrg)
+			if err != nil {
+				t.Errorf("good plugin %d failed: %v", id, err)
+				return
+			}
+			want := fmt.Sprintf(`{"tenant":"t-%d","total":60}`, id)
+			if v.String() != want {
+				t.Errorf("good plugin %d = %q, want %q", id, v.String(), want)
+			}
+		}(i)
+	}
+
+	wg.Add(4)
+	go func() {
+		defer wg.Done()
+		_, err := newSandbox().RunProgram(evilMem)
+		if !isMemLimit(err) {
+			t.Errorf("evilMem: want MemoryLimitError, got %v", err)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		_, err := newSandbox().RunProgram(evilEval)
+		if err == nil || !strings.Contains(err.Error(), "EvalError") {
+			t.Errorf("evilEval: want EvalError, got %v", err)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		_, err := newSandbox().RunProgram(evilReDoS)
+		if err == nil || !strings.Contains(err.Error(), "RangeError") {
+			t.Errorf("evilReDoS: want RangeError, got %v", err)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		_, err := newSandbox().RunProgram(evilStack)
+		var so *StackOverflowError
+		if !errors.As(err, &so) {
+			t.Errorf("evilStack: want StackOverflowError, got %v", err)
+		}
+	}()
+	wg.Wait()
 }
