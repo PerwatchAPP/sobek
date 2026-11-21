@@ -890,11 +890,12 @@ func (r *Runtime) arrayproto_filter(call FunctionCall) Value {
 						fc.Arguments[0] = val
 						fc.Arguments[1] = idx
 						if callbackFn(fc).ToBoolean() {
+							r.chargeMem(valueSize)
 							values = append(values, val)
 						}
 					}
 				}
-				setArrayValues(arr, values)
+				setArrayValuesPrepaid(arr, values)
 				return a
 			}
 		}

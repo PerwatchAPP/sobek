@@ -131,13 +131,26 @@ func (r *Runtime) boundCallable(target func(FunctionCall) Value, boundArgs []Val
 	var args []Value
 	if len(boundArgs) > 0 {
 		this = nilSafe(boundArgs[0])
-		args = make([]Value, len(boundArgs)-1)
-		copy(args, boundArgs[1:])
+		if n := len(boundArgs) - 1; n > 0 {
+			r.chargeValues(int64(n))
+			args = make([]Value, n)
+			copy(args, boundArgs[1:])
+		}
 	} else {
 		this = _undefined
 	}
 	return func(call FunctionCall) Value {
-		a := append(args, call.Arguments...)
+		r.enterNative()
+		defer r.leaveNative()
+		var a []Value
+		if len(args) > 0 && len(call.Arguments) > 0 {
+			r.chargeValues(int64(len(args) + len(call.Arguments)))
+			a = append(args, call.Arguments...)
+		} else if len(args) > 0 {
+			a = args
+		} else {
+			a = call.Arguments
+		}
 		return target(FunctionCall{
 			This:      this,
 			Arguments: a,
@@ -151,11 +164,22 @@ func (r *Runtime) boundConstruct(f *Object, target func([]Value, *Object) *Objec
 	}
 	var args []Value
 	if len(boundArgs) > 1 {
+		r.chargeValues(int64(len(boundArgs) - 1))
 		args = make([]Value, len(boundArgs)-1)
 		copy(args, boundArgs[1:])
 	}
 	return func(fargs []Value, newTarget *Object) *Object {
-		a := append(args, fargs...)
+		r.enterNative()
+		defer r.leaveNative()
+		var a []Value
+		if len(args) > 0 && len(fargs) > 0 {
+			r.chargeValues(int64(len(args) + len(fargs)))
+			a = append(args, fargs...)
+		} else if len(args) > 0 {
+			a = args
+		} else {
+			a = fargs
+		}
 		if newTarget == f {
 			newTarget = nil
 		}

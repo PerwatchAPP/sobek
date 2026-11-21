@@ -389,10 +389,12 @@ func (r *Runtime) object_entries(call FunctionCall) Value {
 	var values []Value
 
 	for item, next := iterateEnumerableStringProperties(obj)(); next != nil; item, next = next() {
+		r.tick()
+		r.chargeMem(valueSize)
 		values = append(values, r.newArrayValues([]Value{item.name, item.value}))
 	}
 
-	return r.newArrayValues(values)
+	return r.newArrayValuesPrepaid(values)
 }
 
 func (r *Runtime) object_values(call FunctionCall) Value {
@@ -401,10 +403,12 @@ func (r *Runtime) object_values(call FunctionCall) Value {
 	var values []Value
 
 	for item, next := iterateEnumerableStringProperties(obj)(); next != nil; item, next = next() {
+		r.tick()
+		r.chargeMem(valueSize)
 		values = append(values, item.value)
 	}
 
-	return r.newArrayValues(values)
+	return r.newArrayValuesPrepaid(values)
 }
 
 func (r *Runtime) objectproto_hasOwnProperty(call FunctionCall) Value {
@@ -622,6 +626,7 @@ func (r *Runtime) object_fromEntries(call FunctionCall) Value {
 
 	iter := r.getIterator(o, nil)
 	iter.iterate(func(nextValue Value) {
+		r.tick()
 		i0 := valueInt(0)
 		i1 := valueInt(1)
 
