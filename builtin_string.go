@@ -107,10 +107,12 @@ func (r *Runtime) stringproto_iterator(call FunctionCall) Value {
 }
 
 func (r *Runtime) string_fromcharcode(call FunctionCall) Value {
+	r.chargeMem(int64(len(call.Arguments)))
 	b := make([]byte, len(call.Arguments))
 	for i, arg := range call.Arguments {
 		chr := toUint16(arg)
 		if chr >= utf8.RuneSelf {
+			r.chargeMul(int64(len(call.Arguments))+1, 2)
 			bb := make([]uint16, len(call.Arguments)+1)
 			bb[0] = unistring.BOM
 			bb1 := bb[1:]
@@ -132,7 +134,9 @@ func (r *Runtime) string_fromcharcode(call FunctionCall) Value {
 
 func (r *Runtime) string_fromcodepoint(call FunctionCall) Value {
 	var sb StringBuilder
+	var charged int64
 	for _, arg := range call.Arguments {
+		r.tick()
 		num := arg.ToNumber()
 		var c rune
 		if numInt, ok := num.(valueInt); ok {
@@ -148,6 +152,7 @@ func (r *Runtime) string_fromcodepoint(call FunctionCall) Value {
 			c = rune(f)
 		}
 		sb.WriteRune(c)
+		r.chargeBuilder(&sb, &charged)
 	}
 	return sb.String()
 }
@@ -758,6 +763,8 @@ func (r *Runtime) stringproto_replaceAll(call FunctionCall) Value {
 
 	pos := s.index(searchStr, 0)
 	for pos != -1 {
+		r.tick()
+		r.chargeMem(48)
 		found = append(found, regexpResult{indexes: []int{pos, pos + searchLength}})
 		pos = s.index(searchStr, pos+advanceBy)
 	}
@@ -877,11 +884,21 @@ func (r *Runtime) stringproto_split(call FunctionCall) Value {
 			if limit > 0 {
 				splitLimit = limit + 1
 			}
+			if len(sepa) == 0 {
+				n := len(sa)
+				if limit > 0 && limit < n {
+					n = limit
+				}
+				r.chargeValues(int64(n))
+			}
 
 			split := strings.SplitN(string(sa), string(sepa), splitLimit)
 
 			if limit > 0 && len(split) > limit {
 				split = split[:limit]
+			}
+			if len(sepa) > 0 {
+				r.chargeValues(int64(len(split)))
 			}
 			valueArray = make([]Value, len(split))
 			for index, value := range split {
@@ -909,9 +926,11 @@ func (r *Runtime) stringproto_split(call FunctionCall) Value {
 				limit = min(math.MaxInt, math.MaxUint32)
 			}
 			for ; limit > 0; limit-- {
+				r.tick()
 				var sb strings.Builder
 				for i := range idx {
 					if su[i] >= utf8.RuneSelf {
+						r.chargeMem(valueSize + 2*int64(idx+1))
 						chunk := make(unicodeString, idx+1)
 						chunk[0] = unistring.BOM
 						copy(chunk[1:], su[:idx])
@@ -919,6 +938,7 @@ func (r *Runtime) stringproto_split(call FunctionCall) Value {
 						goto next
 					}
 				}
+				r.chargeMem(valueSize + int64(idx))
 				sb.Grow(idx)
 				for i := range idx {
 					sb.WriteByte((byte)(su[i]))
@@ -938,9 +958,12 @@ func (r *Runtime) stringproto_split(call FunctionCall) Value {
 			if limit > 0 && len(su) > limit {
 				su = su[:limit]
 			}
+			r.chargeValues(int64(len(su)))
 			for len(su) > 0 {
+				r.tick()
 				c := su[0]
 				if c >= utf8.RuneSelf {
+					r.chargeMem(4)
 					chunk := unicodeString{unistring.BOM, c}
 					valueArray = append(valueArray, chunk)
 				} else {
@@ -951,7 +974,7 @@ func (r *Runtime) stringproto_split(call FunctionCall) Value {
 		}
 	}
 
-	return r.newArrayValues(valueArray)
+	return r.newArrayValuesPrepaid(valueArray)
 }
 
 func (r *Runtime) stringproto_startsWith(call FunctionCall) Value {
@@ -1047,6 +1070,7 @@ func (r *Runtime) stringproto_toWellFormed(call FunctionCall) Value {
 	if idx == -1 {
 		return s
 	}
+	r.chargeMul(int64(len(u)), 2)
 	b := make(unicodeString, len(u))
 	copy(b, u)
 	for i := idx + 1; i < len(b); i++ {

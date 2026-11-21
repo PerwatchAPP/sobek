@@ -279,7 +279,7 @@ func (r *Runtime) map_groupBy(call FunctionCall) Value {
 	o := r.builtin_newMap(nil, r.getMap())
 	mo := o.self.(*mapObject)
 	for i, key := range keys {
-		mo.m.set(key, r.newArrayValues(groups[i]))
+		mo.m.set(key, r.newArrayValuesPrepaid(groups[i]))
 	}
 	return o
 }

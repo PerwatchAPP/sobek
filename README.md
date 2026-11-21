@@ -352,6 +352,9 @@ scripts. Public API:
   `*MemoryLimitError`.
 - `Runtime.SetRegExpTimeout(d)`: bounds one match of any RegExp pattern (upstream switched fully to regexp2); a timeout
   throws a catchable `RangeError`.
+- `Runtime.SetCodeGenDisabled(bool)` / `Runtime.CodeGenDisabled()`: disallows dynamic code generation from strings
+  (`eval`, indirect `eval`, `Function`, `AsyncFunction`, `GeneratorFunction`, including `(() => {}).constructor`), throwing
+  an `EvalError`. Useful for plugin/multi-tenant sandboxes.
 - `Interrupt()` also lands inside long built-ins (loops over a script-controlled length poll it every 4096 iterations),
   and native recursion (JSON, `toString`/`join`, `flat`) deeper than 10 000 levels throws a `RangeError`.
 - The compiler folds constant expressions in a private VM; each fold is capped at 8 MiB (`constEvalLimit`), above which the
@@ -380,4 +383,6 @@ Sync rule (never rebase or squash, see AGENTS.md):
 git fetch upstream && git merge --no-ff upstream/main
 ```
 
-then re-run `go test ./...` and `go test -run 'MemoryLimit|AwaitLoop|RegExpTimeout|Interrupt|NativeDepth' -race .`.
+then re-run `go test ./...` and `go test -run 'MemoryLimit|AwaitLoop|RegExpTimeout|Interrupt|NativeDepth|OverflowAndStack|CodeGenDisabled|MemoryCleanupOnLeave|PluginSandboxProfile' -race .`.
+
+Plugin / `garble` note: when building with `garble`, Go struct field and method names are obfuscated so raw `ToValue(goStruct)` breaks JS property/method lookups. Use `SetFieldNameMapper(TagFieldNameMapper("json", false))` for DTO structs (struct tags are preserved by `garble`) and construct host APIs explicitly via `NewObject()` + `Set("fn", ...)` instead of exposing Go struct methods directly.

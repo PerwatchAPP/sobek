@@ -30,6 +30,10 @@ type weakMap struct {
 }
 
 func (wm *weakMap) set(refs *weakMapRefs, value Value) {
+	wm.setCharged(nil, refs, value)
+}
+
+func (wm *weakMap) setCharged(r *Runtime, refs *weakMapRefs, value Value) {
 	type wmCleanupArg struct {
 		refPtr weak.Pointer[weakMapRefs]
 		wmPtr  weak.Pointer[weakMap]
@@ -38,6 +42,17 @@ func (wm *weakMap) set(refs *weakMapRefs, value Value) {
 	p := weak.Make(wm)
 	refs.Lock()
 	if v, exists := refs.m[p]; !exists {
+		if r != nil {
+			// Release lock before chargeMem, which may panic with *InterruptedError.
+			refs.Unlock()
+			r.chargeMem(memWeakEntry)
+			refs.Lock()
+			if v, exists := refs.m[p]; exists {
+				v.value = value
+				refs.Unlock()
+				return
+			}
+		}
 		// This is to ensure keys do not keep values alive after weakMap becomes unreachable
 		wmCleanup := runtime.AddCleanup(wm, func(arg wmCleanupArg) {
 			refs := arg.refPtr.Value()
@@ -150,7 +165,7 @@ func (r *Runtime) weakMapProto_getOrInsert(call FunctionCall) Value {
 		return v
 	}
 	value := call.Argument(1)
-	wmo.m.set(refs, value)
+	wmo.m.setCharged(r, refs, value)
 	return value
 }
 
@@ -167,7 +182,7 @@ func (r *Runtime) weakMapProto_getOrInsertComputed(call FunctionCall) Value {
 		return v
 	}
 	value := callbackFn(FunctionCall{This: _undefined, Arguments: []Value{key}})
-	wmo.m.set(refs, value)
+	wmo.m.setCharged(r, refs, value)
 	return value
 }
 
@@ -189,7 +204,7 @@ func (r *Runtime) weakMapProto_set(call FunctionCall) Value {
 	if !ok {
 		panic(r.NewTypeError("Method WeakMap.prototype.set called on incompatible receiver %s", r.objectproto_toString(FunctionCall{This: thisObj})))
 	}
-	wmo.m.set(r.weakMapKeyRefs(call.Argument(0)), call.Argument(1))
+	wmo.m.setCharged(r, r.weakMapKeyRefs(call.Argument(0)), call.Argument(1))
 	return call.This
 }
 
@@ -244,10 +259,11 @@ func (r *Runtime) builtin_newWeakMap(args []Value, newTarget *Object) *Object {
 			i1 := valueInt(1)
 			if adder == r.global.weakMapAdder {
 				iter.iterate(func(item Value) {
+					r.tick()
 					itemObj := r.toObject(item)
 					k := itemObj.self.getIdx(i0, nil)
 					v := nilSafe(itemObj.self.getIdx(i1, nil))
-					wmo.m.set(r.weakMapKeyRefs(k), v)
+					wmo.m.setCharged(r, r.weakMapKeyRefs(k), v)
 				})
 			} else {
 				iter.iterate(func(item Value) {

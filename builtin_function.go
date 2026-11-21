@@ -6,7 +6,11 @@ import (
 )
 
 func (r *Runtime) functionCtor(args []Value, proto *Object, async, generator bool) *Object {
+	if r.codeGenDisabled {
+		panic(r.newError(r.getEvalError(), "Code generation from strings disallowed for this runtime"))
+	}
 	var sb StringBuilder
+	var charged int64
 	if async {
 		if generator {
 			sb.WriteString(asciiString("(async function* anonymous("))
@@ -23,15 +27,19 @@ func (r *Runtime) functionCtor(args []Value, proto *Object, async, generator boo
 	if len(args) > 1 {
 		ar := args[:len(args)-1]
 		for i, arg := range ar {
+			r.tick()
 			sb.WriteString(arg.toString())
 			if i < len(ar)-1 {
 				sb.WriteRune(',')
 			}
+			r.chargeBuilder(&sb, &charged)
 		}
 	}
 	sb.WriteString(asciiString("\n) {\n"))
 	if len(args) > 0 {
-		sb.WriteString(args[len(args)-1].toString())
+		body := args[len(args)-1].toString()
+		r.chargeMem(strMemSize(body))
+		sb.WriteString(body)
 	}
 	sb.WriteString(asciiString("\n})"))
 

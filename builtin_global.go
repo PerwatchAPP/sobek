@@ -144,6 +144,7 @@ func (r *Runtime) _decode(sv String, reservedSet *[256]bool) String {
 		return sv
 	}
 
+	r.chargeMem(int64(len(s) - hexCount*2))
 	t := make([]byte, len(s)-hexCount*2)
 	j := 0
 	isUnicode := false
@@ -179,6 +180,7 @@ func (r *Runtime) _decode(sv String, reservedSet *[256]bool) String {
 		return asciiString(t)
 	}
 
+	r.chargeMul(int64(len(s)), 4)
 	us := make([]rune, 0, len(s))
 	for len(t) > 0 {
 		rn, size := utf8.DecodeRune(t)
@@ -273,12 +275,16 @@ func (r *Runtime) builtin_unescape(call FunctionCall) Value {
 	_, u := devirtualizeString(s)
 	unicode := u != nil
 	if unicode {
+		r.chargeMul(int64(l)+1, 2)
 		unicodeBuf = make([]uint16, 1, l+1)
 		unicodeBuf[0] = unistring.BOM
 	} else {
+		r.chargeMem(int64(l))
 		asciiBuf = make([]byte, 0, l)
 	}
+	rt := r
 	for i := 0; i < l; {
+		rt.tick()
 		r := s.CharAt(i)
 		if r == '%' {
 			if i <= l-6 && s.CharAt(i+1) == 'u' {
@@ -310,6 +316,7 @@ func (r *Runtime) builtin_unescape(call FunctionCall) Value {
 		}
 	out:
 		if r >= utf8.RuneSelf && !unicode {
+			rt.chargeMul(int64(l)+1, 2)
 			unicodeBuf = make([]uint16, 1, l+1)
 			unicodeBuf[0] = unistring.BOM
 			for _, b := range asciiBuf {

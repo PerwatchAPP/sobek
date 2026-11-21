@@ -100,7 +100,7 @@ func (vm *vm) resume(ctx *execCtx) {
 	vm.restoreCtx(&ctx.context)
 	sp := vm.sp
 	vm.sb = sp + 1
-	vm.stack.expand(sp + len(ctx.stack))
+	vm.stack.expand(sp+len(ctx.stack), vm.r)
 	copy(vm.stack[sp:], ctx.stack)
 	vm.sp += len(ctx.stack)
 	for i := range ctx.tryStack {
@@ -491,7 +491,7 @@ func toNumeric(value Value) Value {
 	return value.ToNumber()
 }
 
-func (s *valueStack) expand(idx int) {
+func (s *valueStack) expand(idx int, r *Runtime) {
 	if idx < len(*s) {
 		return
 	}
@@ -504,6 +504,9 @@ func (s *valueStack) expand(idx int) {
 			newCap = idx * 2
 		} else {
 			newCap = (idx + 1025) &^ 1023
+		}
+		if r != nil {
+			r.chargeValues(int64(newCap - cap(*s)))
 		}
 		n := make([]Value, idx, newCap)
 		copy(n, *s)
@@ -961,7 +964,7 @@ func (vm *vm) runTryInner() (ex *Exception) {
 }
 
 func (vm *vm) push(v Value) {
-	vm.stack.expand(vm.sp)
+	vm.stack.expand(vm.sp, vm.r)
 	vm.stack[vm.sp] = v
 	vm.sp++
 }
@@ -984,6 +987,10 @@ func (vm *vm) pushCtx() {
 		ex := &StackOverflowError{}
 		ex.stack = vm.captureStack(nil, 0)
 		panic(ex)
+	}
+	if len(vm.callStack) == cap(vm.callStack) {
+		add := max(cap(vm.callStack), 1)
+		vm.r.chargeMul(int64(add), contextSize)
 	}
 	vm.callStack = append(vm.callStack, context{})
 	ctx := &vm.callStack[len(vm.callStack)-1]
@@ -2862,7 +2869,7 @@ type dupLast uint32
 
 func (d dupLast) exec(vm *vm) {
 	e := vm.sp + int(d)
-	vm.stack.expand(e)
+	vm.stack.expand(e, vm.r)
 	copy(vm.stack[vm.sp:e], vm.stack[vm.sp-int(d):])
 	vm.sp = e
 	vm.pc++
@@ -3870,7 +3877,7 @@ func (e *enterBlock) exec(vm *vm) {
 		}
 	}
 	ss := int(e.stackSize)
-	vm.stack.expand(vm.sp + ss - 1)
+	vm.stack.expand(vm.sp+ss-1, vm.r)
 	vv := vm.stack[vm.sp : vm.sp+ss]
 	for i := range vv {
 		vv[i] = nil
@@ -3894,7 +3901,7 @@ func (e *enterCatchBlock) exec(vm *vm) {
 	vm.sp--
 	vm.stash.values[0] = vm.stack[vm.sp]
 	ss := int(e.stackSize)
-	vm.stack.expand(vm.sp + ss - 1)
+	vm.stack.expand(vm.sp+ss-1, vm.r)
 	vv := vm.stack[vm.sp : vm.sp+ss]
 	for i := range vv {
 		vv[i] = nil
@@ -3984,7 +3991,7 @@ func (e *enterFunc) exec(vm *vm) {
 			vm.args = int(e.numArgs)
 		}
 	}
-	vm.stack.expand(sp + ss - 1)
+	vm.stack.expand(sp+ss-1, vm.r)
 	if ea > 0 {
 		vv := vm.stack[sp : vm.sp+ea]
 		for i := range vv {
@@ -4083,7 +4090,7 @@ func (e *enterFuncBody) exec(vm *vm) {
 	}
 	nsp := sp + int(e.stackSize)
 	if e.stackSize > 0 {
-		vm.stack.expand(nsp - 1)
+		vm.stack.expand(nsp-1, vm.r)
 		vv := vm.stack[sp:nsp]
 		for i := range vv {
 			vv[i] = nil
@@ -4126,7 +4133,7 @@ func (e *enterFuncStashless) exec(vm *vm) {
 	d := int(e.args) - vm.args
 	if d > 0 {
 		ss := sp + int(e.stackSize) + d
-		vm.stack.expand(ss)
+		vm.stack.expand(ss, vm.r)
 		vv := vm.stack[sp : sp+d]
 		for i := range vv {
 			vv[i] = _undefined
@@ -4140,7 +4147,7 @@ func (e *enterFuncStashless) exec(vm *vm) {
 	} else {
 		if e.stackSize > 0 {
 			ss := sp + int(e.stackSize)
-			vm.stack.expand(ss)
+			vm.stack.expand(ss, vm.r)
 			vv := vm.stack[sp:ss]
 			for i := range vv {
 				vv[i] = nil
@@ -5433,7 +5440,7 @@ func (_asyncIterNext) exec(vm *vm) {
 	if iter.next == nil {
 		panic(vm.r.NewTypeError("iterator.next is not a function"))
 	}
-	vm.stack.expand(vm.sp + 1)
+	vm.stack.expand(vm.sp+1, vm.r)
 	vm.stack[vm.sp] = iter.next(FunctionCall{This: iter.iterator})
 	vm.sp++
 	// await
@@ -5462,7 +5469,7 @@ type asyncIterClose int32
 func (jmp asyncIterClose) exec(vm *vm) {
 	iter := vm.iterStack[len(vm.iterStack)-1].aiter
 	if ret := toMethod(iter.iterator.self.getStr("return", nil)); ret != nil {
-		vm.stack.expand(vm.sp + 1)
+		vm.stack.expand(vm.sp+1, vm.r)
 		vm.stack[vm.sp] = ret(FunctionCall{This: iter.iterator})
 		vm.sp++
 		// await
@@ -5793,7 +5800,7 @@ func (c *newClass) create(protoParent, ctorParent *Object, vm *vm, derived bool)
 func (c *newClass) exec(vm *vm) {
 	proto, cls := c.create(vm.r.global.ObjectPrototype, vm.r.getFunctionPrototype(), vm, false)
 	sp := vm.sp
-	vm.stack.expand(sp + 1)
+	vm.stack.expand(sp+1, vm.r)
 	vm.stack[sp] = proto
 	vm.stack[sp+1] = cls
 	vm.sp = sp + 2

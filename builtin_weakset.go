@@ -15,7 +15,7 @@ func (r *Runtime) weakSetProto_add(call FunctionCall) Value {
 	if !ok {
 		panic(r.NewTypeError("Method WeakSet.prototype.add called on incompatible receiver %s", r.objectproto_toString(FunctionCall{This: thisObj})))
 	}
-	wso.s.set(r.weakSetValueRefs(call.Argument(0)), nil)
+	wso.s.setCharged(r, r.weakSetValueRefs(call.Argument(0)), nil)
 	return call.This
 }
 
@@ -72,11 +72,13 @@ func (r *Runtime) builtin_newWeakSet(args []Value, newTarget *Object) *Object {
 				ir := r.getIterator(arg, nil)
 				if stdArr != nil && ir.nextRes != nil {
 					for _, v := range stdArr.values {
-						wso.s.set(r.weakSetValueRefs(v), nil)
+						r.tick()
+						wso.s.setCharged(r, r.weakSetValueRefs(v), nil)
 					}
 				} else {
 					ir.iterate(func(item Value) {
-						wso.s.set(r.weakSetValueRefs(item), nil)
+						r.tick()
+						wso.s.setCharged(r, r.weakSetValueRefs(item), nil)
 					})
 				}
 			} else {

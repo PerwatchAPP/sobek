@@ -256,6 +256,7 @@ func (r *Runtime) iteratorProto_filter(call FunctionCall) Value {
 	var counter int64
 	return r.newIteratorHelper(iterated, func() (Value, bool) {
 		for {
+			r.tick()
 			value, ok := iterated.stepValue()
 			if !ok {
 				return nil, false
@@ -291,6 +292,7 @@ func (r *Runtime) iteratorProto_drop(call FunctionCall) Value {
 	iterated := r.getIteratorDirect(thisObj)
 	return r.newIteratorHelper(iterated, func() (Value, bool) {
 		for remaining > 0 {
+			r.tick()
 			if !math.IsInf(remaining, 1) {
 				remaining--
 			}
@@ -308,6 +310,7 @@ func (r *Runtime) iteratorProto_flatMap(call FunctionCall) Value {
 	var inner *iteratorRecord
 	h := r.newIteratorHelper(iterated, func() (Value, bool) {
 		for {
+			r.tick()
 			if inner == nil {
 				value, ok := iterated.stepValue()
 				if !ok {
@@ -354,6 +357,7 @@ func (r *Runtime) iteratorProto_reduce(call FunctionCall) Value {
 		counter = 1
 	}
 	for {
+		r.tick()
 		value, ok := iterated.stepValue()
 		if !ok {
 			return accumulator
@@ -367,10 +371,12 @@ func (r *Runtime) iteratorProto_toArray(call FunctionCall) Value {
 	iterated := r.getIteratorDirect(r.thisIteratorObject(call, "toArray"))
 	var items []Value
 	for {
+		r.tick()
 		value, ok := iterated.stepValue()
 		if !ok {
-			return r.newArrayValues(items)
+			return r.newArrayValuesPrepaid(items)
 		}
+		r.chargeMem(valueSize)
 		items = append(items, value)
 	}
 }
@@ -378,6 +384,7 @@ func (r *Runtime) iteratorProto_toArray(call FunctionCall) Value {
 func (r *Runtime) iteratorProto_forEach(call FunctionCall) Value {
 	iterated, fn := r.iteratorWithCallback(call, "forEach")
 	for counter := int64(0); ; counter++ {
+		r.tick()
 		value, ok := iterated.stepValue()
 		if !ok {
 			return _undefined
@@ -389,6 +396,7 @@ func (r *Runtime) iteratorProto_forEach(call FunctionCall) Value {
 func (r *Runtime) iteratorProto_some(call FunctionCall) Value {
 	iterated, predicate := r.iteratorWithCallback(call, "some")
 	for counter := int64(0); ; counter++ {
+		r.tick()
 		value, ok := iterated.stepValue()
 		if !ok {
 			return valueFalse
@@ -403,6 +411,7 @@ func (r *Runtime) iteratorProto_some(call FunctionCall) Value {
 func (r *Runtime) iteratorProto_every(call FunctionCall) Value {
 	iterated, predicate := r.iteratorWithCallback(call, "every")
 	for counter := int64(0); ; counter++ {
+		r.tick()
 		value, ok := iterated.stepValue()
 		if !ok {
 			return valueTrue
@@ -417,6 +426,7 @@ func (r *Runtime) iteratorProto_every(call FunctionCall) Value {
 func (r *Runtime) iteratorProto_find(call FunctionCall) Value {
 	iterated, predicate := r.iteratorWithCallback(call, "find")
 	for counter := int64(0); ; counter++ {
+		r.tick()
 		value, ok := iterated.stepValue()
 		if !ok {
 			return _undefined
@@ -657,6 +667,7 @@ func (r *Runtime) iterator_zip(call FunctionCall) Value {
 	var iters []*iteratorRecord
 	inputIter := r.getIterator(iterables, nil)
 	for {
+		r.tick()
 		var next Value
 		if ex := tryFunc(func() {
 			next, ok = inputIter.stepValue()
@@ -672,10 +683,12 @@ func (r *Runtime) iterator_zip(call FunctionCall) Value {
 		}); ex != nil {
 			closeIterators(append([]*iteratorRecord{inputIter}, iters...), ex)
 		}
+		r.chargeMem(valueSize)
 		iters = append(iters, iter)
 	}
 	var padding []Value
 	if mode == iteratorZipLongest {
+		r.chargeValues(int64(len(iters)))
 		padding = make([]Value, len(iters))
 		for i := range padding {
 			padding[i] = _undefined
@@ -711,9 +724,11 @@ func (r *Runtime) iterator_zipKeyed(call FunctionCall) Value {
 	var keys []Value
 	if ex := tryFunc(func() {
 		for item, next := iterateEnumerableProperties(iterables)(); next != nil; item, next = next() {
+			r.tick()
 			if item.value == _undefined {
 				continue
 			}
+			r.chargeMem(2 * valueSize)
 			iters = append(iters, r.getIteratorFlattenable(item.value, false))
 			keys = append(keys, item.name)
 		}
@@ -722,6 +737,7 @@ func (r *Runtime) iterator_zipKeyed(call FunctionCall) Value {
 	}
 	var padding []Value
 	if mode == iteratorZipLongest {
+		r.chargeValues(int64(len(iters)))
 		padding = make([]Value, len(iters))
 		if paddingOption != nil {
 			if ex := tryFunc(func() {

@@ -618,10 +618,12 @@ func (r *Runtime) typedArrayProto_filter(call FunctionCall) Value {
 			This:      call.Argument(1),
 			Arguments: []Value{nil, nil, call.This},
 		}
+		r.chargeMul(int64(ta.length), int64(ta.elemSize))
 		buf := make([]byte, 0, ta.length*ta.elemSize)
 		captured := 0
 		rawVal := make([]byte, ta.elemSize)
 		for k := 0; k < ta.length; k++ {
+			r.tick()
 			if ta.isValidIntegerIndex(k) {
 				fc.Arguments[0] = ta.typedArray.get(ta.offset + k)
 				i := (ta.offset + k) * ta.elemSize
@@ -1649,6 +1651,7 @@ func (r *Runtime) uint8Array_fromHex(call FunctionCall) Value {
 	if !ok {
 		panic(r.NewTypeError("Uint8Array.fromHex requires a string"))
 	}
+	r.chargeMem(int64(s.Length() / 2))
 	b, err := fromHex(s)
 	if err != nil {
 		panic(r.newSyntaxError(err.Error())) // SyntaxError for odd-length-input or illegal-characters
@@ -1662,11 +1665,12 @@ func (r *Runtime) uint8Array_fromBase64(call FunctionCall) Value {
 	if !ok {
 		panic(r.NewTypeError("Uint8Array.fromBase64 requires a string"))
 	}
-	// 2. Let opts be ? GetOptionsObject(options).
+	// 2. Let opts be ? GetOptionsObject(options).
 	// 3.-8. Get and validate "alphabet" and "lastChunkHandling".
 	decodeMap, lastChunkHandling := r.parseFromBase64Options(call.Argument(1))
 
 	// 9. Let result be FromBase64(string, alphabet, lastChunkHandling).
+	r.chargeMem(int64(s.Length())*3/4 + 3)
 	_, b, err := fromBase64(s, decodeMap, lastChunkHandling)
 	if err != nil {
 		panic(r.newSyntaxError(err.Error()))
@@ -1728,7 +1732,9 @@ func (r *Runtime) uint8ArrayProto_toBase64(call FunctionCall) Value {
 	enc := r.parseToBase64Encoding(call.Argument(0))
 	// GetUint8ArrayBytes runs after the option getters, which may have detached the buffer.
 	toEnc := r.getUint8ArrayBytes(ta)
-	buf := make([]byte, enc.EncodedLen(len(toEnc)))
+	outLen := enc.EncodedLen(len(toEnc))
+	r.chargeMem(int64(outLen))
+	buf := make([]byte, outLen)
 	enc.Encode(buf, toEnc)
 	return asciiString(unsafe.String(unsafe.SliceData(buf), len(buf)))
 }
@@ -1780,7 +1786,9 @@ func (r *Runtime) parseToBase64Encoding(options Value) *stdbase64.Encoding {
 func (r *Runtime) uint8ArrayProto_toHex(call FunctionCall) Value {
 	ta := r.validateUint8Array(call.This)
 	toEnc := r.getUint8ArrayBytes(ta)
-	buf := make([]byte, stdhex.EncodedLen(len(toEnc)))
+	outLen := stdhex.EncodedLen(len(toEnc))
+	r.chargeMem(int64(outLen))
+	buf := make([]byte, outLen)
 	stdhex.Encode(buf, toEnc)
 	return asciiString(unsafe.String(unsafe.SliceData(buf), len(buf)))
 }

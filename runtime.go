@@ -228,6 +228,7 @@ type Runtime struct {
 	cbuf              concatBufs // see memlimit_concat.go
 	nativeDepth       int
 	regexpTimeout     time.Duration
+	codeGenDisabled   bool
 }
 
 type StackFrame struct {
@@ -991,6 +992,10 @@ func (r *Runtime) eval(srcVal String, direct, strict bool) Value {
 			funcObj = vm.stack[sb-1]
 		}
 	}
+	if r.codeGenDisabled {
+		panic(r.newError(r.getEvalError(), "Code generation from strings disallowed for this runtime"))
+	}
+	r.chargeMul(int64(len(src)), 8)
 	p, err := r.compile("<eval>", src, strict, inGlobal, r.vm)
 	if err != nil {
 		panic(err)
@@ -1548,7 +1553,7 @@ func (r *Runtime) RunProgram(p *Program) (result Value, err error) {
 		vm.newTarget = nil
 		vm.args = 0
 		sp := vm.sp
-		vm.stack.expand(sp + 1)
+		vm.stack.expand(sp+1, r)
 		vm.stack[sp] = _undefined // 'callee'
 		vm.stack[sp+1] = nil      // 'this'
 		vm.sb = sp + 1
@@ -3106,11 +3111,14 @@ func (r *Runtime) leave() {
 	}
 	r.jobQueue = nil
 	r.vm.stack = nil
+	r.cbuf = concatBufs{}
 }
 
 // called when the top level function returns (i.e. control is passed outside the Runtime) but it was due to an interrupt
 func (r *Runtime) leaveAbrupt() {
 	r.jobQueue = nil
+	r.vm.stack = nil
+	r.cbuf = concatBufs{}
 	r.ClearInterrupt()
 }
 
@@ -3227,6 +3235,8 @@ func (r *Runtime) iterableToList(iterable Value, method func(FunctionCall) Value
 	iter := r.getIterator(iterable, method)
 	var values []Value
 	iter.iterate(func(item Value) {
+		r.tick()
+		r.chargeMem(valueSize)
 		values = append(values, item)
 	})
 	return values

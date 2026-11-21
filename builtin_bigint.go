@@ -264,6 +264,9 @@ func (r *Runtime) bigintproto_toString(call FunctionCall) Value {
 		}
 	}
 
+	if bits := x.BitLen(); bits > 64 {
+		r.chargeMem(int64(float64(bits)/math.Log2(float64(radixMV))) + 16)
+	}
 	return asciiString(x.Text(radixMV))
 }
 
@@ -322,6 +325,11 @@ func (r *Runtime) builtin_BigInt(call FunctionCall) Value {
 		switch v := call.Argument(0).(type) {
 		case *valueBigInt, valueInt, valueFloat, *Object:
 			return numberToBigInt(v)
+		case String:
+			if l := v.Length(); l > 32 {
+				r.chargeMem(int64(l/2) + 48)
+			}
+			return toBigInt(v)
 		default:
 			return toBigInt(v)
 		}
