@@ -643,3 +643,37 @@ func TestMemoryChargeSliceOnce(t *testing.T) {
 		}
 	}
 }
+
+func TestMemoryLimitImportedStringConcat(t *testing.T) {
+	enter(t)
+	vm := New()
+	vm.SetMemoryLimit(4 * mib)
+	vm.Set("seed", strings.Repeat("a", 2000))
+	v, err := vm.RunString(`let s = seed; for (let i = 0; i < 1000; i++) s += "b".repeat(100); s.length`)
+	if err != nil || v.ToInteger() != 102000 {
+		t.Fatalf("got %v, %v", v, err)
+	}
+	if u := vm.MemoryUsage(); u >= mib {
+		t.Fatalf("imported string append loop charged %d", u)
+	}
+}
+
+func TestMemoryLimitCreateHTML(t *testing.T) {
+	runLimited(t, `"x".link('"'.repeat(5e5))`, budget, 2*time.Second)
+	runLimited(t, `"x".repeat(1.2e6).bold()`, budget, 2*time.Second)
+}
+
+// Upstream switched fully to regexp2, so even patterns without backreferences can backtrack and must obey SetRegExpTimeout.
+func TestRegExpTimeoutPlainPattern(t *testing.T) {
+	enter(t)
+	vm := New()
+	vm.SetRegExpTimeout(200 * time.Millisecond)
+	start := time.Now()
+	v, err := vm.RunString(`try{/^(a+)+$/.test("a".repeat(30)+"b");"no error"}catch(e){e instanceof RangeError}`)
+	if err != nil || v.Export() != true {
+		t.Fatalf("want a caught RangeError, got %v %v", v, err)
+	}
+	if d := time.Since(start); d > slack(2*time.Second) {
+		t.Fatalf("took %v", d)
+	}
+}

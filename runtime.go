@@ -78,6 +78,7 @@ type global struct {
 	Int16Array        *Object
 	Uint32Array       *Object
 	Int32Array        *Object
+	Float16Array      *Object
 	Float32Array      *Object
 	Float64Array      *Object
 	BigInt64Array     *Object
@@ -153,6 +154,8 @@ type global struct {
 
 	stringproto_trimEnd   *Object
 	stringproto_trimStart *Object
+
+	dateproto_toUTCString *Object
 
 	parseFloat, parseInt *Object
 
@@ -890,11 +893,11 @@ func (r *Runtime) builtin_Number(call FunctionCall) Value {
 		case *Object:
 			primValue := t.toPrimitiveNumber()
 			if bigint, ok := primValue.(*valueBigInt); ok {
-				return intToValue((*big.Int)(bigint).Int64())
+				return bigint.numberValue()
 			}
 			return primValue.ToNumber()
 		case *valueBigInt:
-			return intToValue((*big.Int)(t).Int64())
+			return t.numberValue()
 		default:
 			return t.ToNumber()
 		}
@@ -910,12 +913,12 @@ func (r *Runtime) builtin_newNumber(args []Value, proto *Object) *Object {
 		case *Object:
 			primValue := t.toPrimitiveNumber()
 			if bigint, ok := primValue.(*valueBigInt); ok {
-				v = intToValue((*big.Int)(bigint).Int64())
+				v = bigint.numberValue()
 			} else {
 				v = primValue.ToNumber()
 			}
 		case *valueBigInt:
-			v = intToValue((*big.Int)(t).Int64())
+			v = t.numberValue()
 		default:
 			v = t.ToNumber()
 		}
@@ -1257,6 +1260,10 @@ func toUint(v Value) uint {
 	return 0
 }
 
+func toFloat16Bits(v Value) uint16 {
+	return Float64ToFloat16(v.ToFloat())
+}
+
 func toFloat32(v Value) float32 {
 	return float32(v.ToFloat())
 }
@@ -1415,12 +1422,16 @@ func MustCompile(name, src string, strict bool) *Program {
 func Parse(name, src string, options ...parser.Option) (prg *js_ast.Program, err error) {
 	prg, err1 := parser.ParseFile(nil, name, src, 0, options...)
 	if err1 != nil {
-		// FIXME offset
-		err = &CompilerSyntaxError{
-			CompilerError: CompilerError{
-				Message: err1.Error(),
-			},
+		e := &CompilerSyntaxError{}
+		var list parser.ErrorList
+		if errors.As(err1, &list) && len(list) > 0 {
+			e.Message = list[0].Message
+			e.File = list[0].File
+			e.Offset = list[0].Offset
+		} else {
+			e.Message = err1.Error()
 		}
+		err = e
 	}
 	return
 }
@@ -1719,7 +1730,17 @@ invalid characters).
 
 # Nil
 
-Nil is converted to null.
+Nil is converted to null. This includes nil pointers, nil interfaces, nil slices, and nil functions. Note that they lose
+their type as a result and exported as plain nil interface (nil type and nil value).
+
+# Pointers
+
+Pointers are de-referenced and the referenced object dictates the shape of the Value. The Value keeps referring to the
+same object, so any changes made to it will be reflected. If the referenced value is a nil map without methods, setting
+a property creates a map. Same applies to slices.
+
+Note, the indirection only goes one level, i.e. a pointer to a pointer becomes a generic empty Object. As with any
+Object wrapper it can have Symbol properties, but no string or index properties. It exports to the original pointer value.
 
 # Functions
 
@@ -1988,7 +2009,7 @@ func (r *Runtime) toValue(i interface{}, origValue reflect.Value) Value {
 	}
 
 	value := origValue
-	for value.Kind() == reflect.Ptr {
+	if value.Kind() == reflect.Pointer {
 		value = value.Elem()
 	}
 
@@ -1998,7 +2019,7 @@ func (r *Runtime) toValue(i interface{}, origValue reflect.Value) Value {
 
 	switch value.Kind() {
 	case reflect.Map:
-		if value.IsNil() {
+		if value.IsNil() && !value.CanSet() {
 			return _null
 		}
 		if value.Type().NumMethod() == 0 {
@@ -2038,6 +2059,9 @@ func (r *Runtime) toValue(i interface{}, origValue reflect.Value) Value {
 		obj.self = a
 		return obj
 	case reflect.Slice:
+		if value.IsNil() && !value.CanSet() {
+			return _null
+		}
 		obj := &Object{runtime: r}
 		a := &objectGoSliceReflect{
 			objectGoArrayReflect: objectGoArrayReflect{
@@ -2510,7 +2534,7 @@ func (r *Runtime) Set(name string, value interface{}) error {
 // This method will panic with an *Exception if a JavaScript exception is thrown in the process. Use Runtime.Try to catch these.
 func (r *Runtime) Get(name string) Value {
 	n := unistring.NewFromString(name)
-	if v, exists := r.global.stash.getByName(n); exists {
+	if v, exists := r.global.stash.getByName(n, false); exists {
 		return v
 	} else {
 		return r.globalObject.self.getStr(n, nil)
@@ -2562,7 +2586,7 @@ func AssertFunction(v Value) (Callable, bool) {
 			return func(this Value, args ...Value) (ret Value, err error) {
 				err = obj.runtime.runWrapped(func() {
 					ret = f(FunctionCall{
-						This:      this,
+						This:      nilSafe(this),
 						Arguments: args,
 					})
 				})
@@ -3191,7 +3215,7 @@ func (r *Runtime) trackPromiseRejection(p *Promise, operation PromiseRejectionOp
 }
 
 func (r *Runtime) callJobCallback(job *jobCallback, this Value, args ...Value) Value {
-	return job.callback(FunctionCall{This: this, Arguments: args})
+	return job.callback(FunctionCall{This: nilSafe(this), Arguments: args})
 }
 
 func (r *Runtime) invoke(v Value, p unistring.String, args ...Value) Value {
@@ -3275,6 +3299,9 @@ func strToInt32(s unistring.String) (int32, bool) {
 		s = s[1:]
 	}
 	l := len(s)
+	if l == 0 {
+		return -1, false
+	}
 	if s[0] == '0' {
 		if l == 1 {
 			return 0, !neg
@@ -3332,6 +3359,9 @@ func strToInt64(s unistring.String) (int64, bool) {
 		s = s[1:]
 	}
 	l := len(s)
+	if l == 0 {
+		return -1, false
+	}
 	if s[0] == '0' {
 		if l == 1 {
 			return 0, !neg

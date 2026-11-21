@@ -39,12 +39,21 @@ type concatBufs struct {
 	lastN int
 }
 
-func flatStr(s String) bool {
-	switch s.(type) {
+func toFlatStr(s String) String {
+	switch s := s.(type) {
 	case asciiString, unicodeString:
-		return true
+		return s
+	case *importedString:
+		s.ensureScanned()
+		if s.u != nil {
+			return s.u
+		}
+		return asciiString(s.s)
+	case *concatString:
+		return s.flatten()
+	default:
+		panic(unknownStringTypeErr(s))
 	}
-	return false
 }
 
 func strKey(v Value) (p uintptr, n int) {
@@ -122,12 +131,8 @@ func (r *Runtime) concat2(a, b String) String {
 			return x + y
 		}
 	}
-	if flatStr(a) && flatStr(b) {
-		parts := [2]Value{a, b}
-		return r.concatStrs(parts[:])
-	}
-	r.chargeMem(strMemSize(a) + strMemSize(b)) // lazily imported strings: plain copy, charged in full
-	return a.Concat(b)
+	parts := [2]Value{toFlatStr(a), toFlatStr(b)}
+	return r.concatStrs(parts[:])
 }
 
 // concatStrs concatenates parts, each an asciiString or unicodeString, and charges the memory it allocates.

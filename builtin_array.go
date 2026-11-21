@@ -354,7 +354,7 @@ func (r *Runtime) arrayproto_concat(call FunctionCall) Value {
 	a := arraySpeciesCreate(obj, 0)
 	r.arrayproto_concat_append(a, call.This.ToObject(r))
 	for _, item := range call.Arguments {
-		r.arrayproto_concat_append(a, item)
+		r.arrayproto_concat_append(a, nilSafe(item))
 	}
 	return a
 }
@@ -690,7 +690,17 @@ func (r *Runtime) arrayproto_includes(call FunctionCall) Value {
 		searchElement = _positiveZero
 	}
 
+	zero := searchElement == _positiveZero
+
 	if arr := r.checkStdArrayObj(o); arr != nil {
+		if zero {
+			for _, val := range arr.values[n:] {
+				if searchElement.StrictEquals(val) {
+					return valueTrue
+				}
+			}
+			return valueFalse
+		}
 		for _, val := range arr.values[n:] {
 			if searchElement.SameAs(val) {
 				return valueTrue
@@ -703,7 +713,7 @@ func (r *Runtime) arrayproto_includes(call FunctionCall) Value {
 		r.tick()
 		idx := valueInt(n)
 		val := nilSafe(o.self.getIdx(idx, nil))
-		if searchElement.SameAs(val) {
+		if searchElement.SameAs(val) || zero && searchElement.StrictEquals(val) {
 			return valueTrue
 		}
 	}
@@ -1355,7 +1365,7 @@ func (r *Runtime) arrayproto_with(call FunctionCall) Value {
 			if k == actualIndex {
 				fromValue = value
 			} else {
-				fromValue = o.self.getIdx(pk, nil)
+				fromValue = nilSafe(o.self.getIdx(pk, nil))
 			}
 			createDataPropertyOrThrow(a, pk, fromValue)
 		}
@@ -1383,7 +1393,7 @@ func (r *Runtime) arrayproto_toReversed(call FunctionCall) Value {
 			r.tick()
 			pk := valueInt(k)
 			from := valueInt(length - k - 1)
-			fromValue := o.self.getIdx(from, nil)
+			fromValue := nilSafe(o.self.getIdx(from, nil))
 			createDataPropertyOrThrow(a, pk, fromValue)
 		}
 		return a
@@ -1513,7 +1523,13 @@ func (r *Runtime) checkStdArrayObj(obj *Object) *arrayObject {
 
 func (r *Runtime) checkStdArrayObjWithProto(obj *Object) *arrayObject {
 	if arr := r.checkStdArrayObj(obj); arr != nil {
+		if arr.prototype == nil {
+			return arr
+		}
 		if p1, ok := arr.prototype.self.(*arrayObject); ok && p1.propValueCount == 0 {
+			if p1.prototype == nil {
+				return arr
+			}
 			if p2, ok := p1.prototype.self.(*baseObject); ok && p2.prototype == nil {
 				p2.ensurePropOrder()
 				if p2.idxPropCount == 0 {
@@ -1596,6 +1612,9 @@ func (r *Runtime) array_from(call FunctionCall) Value {
 		if ctor != nil {
 			arr = ctor([]Value{intToValue(l)}, nil)
 		} else {
+			if l > math.MaxUint32 {
+				panic(r.newError(r.getRangeError(), "Invalid array length"))
+			}
 			arr = r.newArrayValues(nil)
 		}
 		if mapFn == nil {
@@ -1653,7 +1672,7 @@ func (r *Runtime) array_of(call FunctionCall) Value {
 	l := intToValue(int64(len(call.Arguments)))
 	arr := ctor([]Value{l}, nil)
 	for i, val := range call.Arguments {
-		createDataPropertyOrThrow(arr, intToValue(int64(i)), val)
+		createDataPropertyOrThrow(arr, intToValue(int64(i)), nilSafe(val))
 	}
 	arr.self.setOwnStr("length", l, true)
 	return arr

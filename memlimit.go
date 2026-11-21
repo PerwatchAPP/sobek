@@ -31,9 +31,8 @@ func (r *Runtime) MemoryUsage() int64 {
 	return r.memUsed
 }
 
-// SetRegExpTimeout bounds one match of a regexp2-backed pattern (backreferences, lookbehind...); 0 = none. A timeout
-// throws a catchable RangeError. Patterns served by Go's linear RE2 engine need no bound. It applies to RegExp objects
-// created after the call.
+// SetRegExpTimeout bounds one match of any RegExp pattern (all patterns use regexp2); 0 = none. A timeout
+// throws a catchable RangeError. It applies to RegExp objects created after the call.
 func (r *Runtime) SetRegExpTimeout(d time.Duration) {
 	r.regexpTimeout = d
 }
