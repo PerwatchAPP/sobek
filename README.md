@@ -360,6 +360,14 @@ scripts. Public API:
   is `*StepLimitError`.
 - `Runtime.ExportJSON(v, maxBytes)`: serializes a JS value to JSON inside the VM (respecting memory limit, native depth,
   and circular reference checks) and stops early if the output exceeds `maxBytes`.
+- `Runtime.SetMaxPromiseJobs(n)` / `Runtime.PromiseJobCount()`: bounds total promise microtask jobs enqueued in the
+  runtime (0 = unlimited), aborting microtask floods with an uncatchable `*InterruptedError` whose `Value()` is
+  `*JobLimitError`.
+- `CompileWithOptions(name, src, strict, parserOpts...)` / `CompileSandbox(name, src, maxSourceBytes, maxNestingDepth)`:
+  compiles untrusted code in strict mode with `parser.WithDisableSourceMaps` (preventing `//# sourceMappingURL=` local
+  filesystem reads / SMB probes / compile-time OOM) and `parser.WithMaxNestingDepth`.
+- `Runtime.ApplySandbox(DefaultSandboxOptions())` & `Runtime.FreezeIntrinsics()`: one-call multi-tenant sandbox setup
+  (limits, safe parser options, `garble`-safe JSON tag field mapper, and optional prototype-pollution lockdown).
 - `Interrupt()` also lands inside long built-ins (loops over a script-controlled length poll it every 4096 iterations),
   and native recursion (JSON, `toString`/`join`, `flat`) deeper than 10 000 levels throws a `RangeError`.
 - The compiler folds constant expressions in a private VM; each fold is capped at 8 MiB (`constEvalLimit`), above which the

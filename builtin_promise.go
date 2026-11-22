@@ -189,6 +189,7 @@ func (r *Runtime) newPromiseResolveThenableJob(p *Promise, thenable Value, then 
 
 func (r *Runtime) enqueuePromiseJob(job func()) {
 	r.chargeMem(memJob)
+	r.chargePromiseJob()
 	r.jobQueue = append(r.jobQueue, job)
 }
 
