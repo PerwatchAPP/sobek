@@ -46,6 +46,17 @@ func (r *Runtime) PromiseJobCount() int64 {
 	return r.jobsQueued
 }
 
+// ResetSandboxCounters resets the monotonic memory, step, promise job, and tick counters and clears any interrupt
+// flag so a same-tenant Runtime (typically hardened with FreezeIntrinsics) can be reused cleanly across invocations
+// in a pool. Never pool a Runtime across untrusted tenant boundaries.
+func (r *Runtime) ResetSandboxCounters() {
+	r.memUsed = 0
+	r.stepsUsed = 0
+	r.jobsQueued = 0
+	r.ticks = 0
+	r.ClearInterrupt()
+}
+
 func (r *Runtime) chargePromiseJob() {
 	if r.jobsQueued < math.MaxInt64 {
 		r.jobsQueued++

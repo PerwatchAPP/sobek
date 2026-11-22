@@ -366,8 +366,12 @@ scripts. Public API:
 - `CompileWithOptions(name, src, strict, parserOpts...)` / `CompileSandbox(name, src, maxSourceBytes, maxNestingDepth)`:
   compiles untrusted code in strict mode with `parser.WithDisableSourceMaps` (preventing `//# sourceMappingURL=` local
   filesystem reads / SMB probes / compile-time OOM) and `parser.WithMaxNestingDepth`.
-- `Runtime.ApplySandbox(DefaultSandboxOptions())` & `Runtime.FreezeIntrinsics()`: one-call multi-tenant sandbox setup
-  (limits, safe parser options, `garble`-safe JSON tag field mapper, and optional prototype-pollution lockdown).
+- `Runtime.ApplySandbox(DefaultSandboxOptions())`, `Runtime.FreezeIntrinsics()`, & `Runtime.ResetSandboxCounters()`:
+  one-call multi-tenant sandbox setup (limits, safe parser options, `garble`-safe JSON tag field mapper, optional
+  prototype-pollution lockdown, and safe per-invocation counter reset for same-tenant runtime pools).
+- `Runtime.EvaluateVirtualModule(name, src, virtualModules, maxSourceBytes, maxNestingDepth)`: evaluates ES Modules
+  (`import { ... } from '@monitic/sdk'`) in a closed virtual module sandbox with zero filesystem access and source maps
+  disabled.
 - `Interrupt()` also lands inside long built-ins (loops over a script-controlled length poll it every 4096 iterations),
   and native recursion (JSON, `toString`/`join`, `flat`) deeper than 10 000 levels throws a `RangeError`.
 - The compiler folds constant expressions in a private VM; each fold is capped at 8 MiB (`constEvalLimit`), above which the
