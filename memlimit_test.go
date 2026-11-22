@@ -1235,3 +1235,92 @@ func TestFreezeIntrinsicsAndApplySandbox(t *testing.T) {
 		t.Fatalf("garble-safe JSON tag lookup failed: %v %v", v2, err)
 	}
 }
+
+func TestVirtualESMSandbox(t *testing.T) {
+	enter(t)
+	vm := New()
+	vm.ApplySandbox(DefaultSandboxOptions())
+
+	sdk := map[string]map[string]any{
+		"@monitic/sdk": {
+			"version": "2.0.0",
+			"double":  func(x int64) int64 { return x * 2 },
+		},
+	}
+
+	// Valid virtual ESM import works cleanly and exports functions to the host.
+	ns, err := vm.EvaluateVirtualModule("plugin.mjs", `
+		import { version, double } from '@monitic/sdk';
+		export function compute(n) {
+			return version + ":" + double(n);
+		}
+	`, sdk, 4096, 64)
+	if err != nil {
+		t.Fatalf("EvaluateVirtualModule failed: %v", err)
+	}
+	fn, ok := AssertFunction(ns.Get("compute"))
+	if !ok {
+		t.Fatalf("missing exported compute function")
+	}
+	v, err := fn(Undefined(), vm.ToValue(21))
+	if err != nil || v.String() != "2.0.0:42" {
+		t.Fatalf("compute(21) = %v, %v", v, err)
+	}
+
+	// Disallowed filesystem / arbitrary import is rejected before touching disk.
+	vm2 := New()
+	vm2.ApplySandbox(DefaultSandboxOptions())
+	if _, err := vm2.EvaluateVirtualModule("evil.mjs", `import x from '/etc/passwd'; export const a = x;`, sdk, 4096, 64); err == nil || !strings.Contains(err.Error(), "not allowed in sandbox") {
+		t.Fatalf("expected virtual module rejection, got %v", err)
+	}
+}
+
+func TestResetSandboxCounters(t *testing.T) {
+	enter(t)
+	vm := New()
+	opts := DefaultSandboxOptions()
+	opts.FreezeIntrinsics = true
+	opts.MemoryLimitBytes = 1 * mib
+	opts.MaxSteps = 10000
+	vm.ApplySandbox(opts)
+
+	prg, err := CompileSandbox("fn.js", `function calc(x) { let s = 0; for (let i = 0; i < x; i++) s += i; return s; }`, 4096, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := vm.RunProgram(prg); err != nil {
+		t.Fatal(err)
+	}
+	fn, _ := AssertFunction(vm.Get("calc"))
+	for range 5 {
+		vm.ResetSandboxCounters()
+		v, err := fn(Undefined(), vm.ToValue(50))
+		if err != nil || v.ToInteger() != 1225 {
+			t.Fatalf("calc(50) = %v, %v", v, err)
+		}
+	}
+}
+
+func BenchmarkPluginPooledFrozenRuntime(b *testing.B) {
+	prg, err := CompileSandbox("pooled.js", `function handle(raw) { const ev = JSON.parse(raw); return JSON.stringify({ host: ev.host, sum: ev.items.reduce((a, b) => a + b, 0) }); }`, 4096, 64)
+	if err != nil {
+		b.Fatal(err)
+	}
+	vm := New()
+	opts := DefaultSandboxOptions()
+	opts.FreezeIntrinsics = true
+	vm.ApplySandbox(opts)
+	if _, err := vm.RunProgram(prg); err != nil {
+		b.Fatal(err)
+	}
+	fn, _ := AssertFunction(vm.Get("handle"))
+	payload := `{"host":"prod-web-01","items":[10,20,30,40]}`
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		vm.ResetSandboxCounters()
+		if _, err := fn(Undefined(), vm.ToValue(payload)); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
