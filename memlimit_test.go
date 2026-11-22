@@ -1131,16 +1131,107 @@ func FuzzSandbox(f *testing.F) {
 		if len(src) > 4096 {
 			return
 		}
-		prg, err := Compile("fuzz.js", src, false)
+		prg, err := CompileSandbox("fuzz.js", src, 4096, 128)
 		if err != nil {
 			return
 		}
 		vm := New()
-		vm.SetMemoryLimit(1 * mib)
-		vm.SetMaxSteps(20000)
-		vm.SetRegExpTimeout(20 * time.Millisecond)
-		vm.SetMaxCallStackSize(64)
-		vm.SetCodeGenDisabled(true)
+		vm.ApplySandbox(SandboxOptions{
+			MemoryLimitBytes: 1 * mib,
+			MaxSteps:         20000,
+			MaxPromiseJobs:   500,
+			RegExpTimeout:    20 * time.Millisecond,
+			MaxCallStackSize: 64,
+			MaxNestingDepth:  128,
+			DisableCodeGen:   true,
+		})
 		_, _ = vm.RunProgram(prg)
 	})
+}
+
+func TestCompileSandboxBlocksSourceMapAndNesting(t *testing.T) {
+	enter(t)
+	// Write a real source map file on disk; CompileSandbox must NEVER load it via //# sourceMappingURL=.
+	tmp := t.TempDir() + "/secret.map"
+	if err := os.WriteFile(tmp, []byte(`{"version":3,"file":"plugin.js","sources":["LEAKED_SECRET.ts"],"names":[],"mappings":"AAAA"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sourceMapCode := "const x = 1 + 2; x;\n//# sourceMappingURL=" + tmp
+	prg, err := CompileSandbox("plugin.js", sourceMapCode, 4096, 64)
+	if err != nil {
+		t.Fatalf("CompileSandbox failed: %v", err)
+	}
+	if pos := prg.src.Position(0); pos.Filename != "plugin.js" {
+		t.Fatalf("CompileSandbox must ignore sourceMappingURL, got filename %q", pos.Filename)
+	}
+
+	// Oversized source rejected before parsing.
+	if _, err := CompileSandbox("big.js", strings.Repeat("a", 5000), 4096, 64); err == nil {
+		t.Fatalf("expected source size limit error")
+	}
+
+	// Deeply nested expression rejected by custom MaxNestingDepth.
+	deep := strings.Repeat("(", 80) + "1" + strings.Repeat(")", 80)
+	if _, err := CompileSandbox("deep.js", deep, 4096, 32); err == nil || !strings.Contains(err.Error(), "Maximum nesting depth exceeded") {
+		t.Fatalf("expected Maximum nesting depth exceeded, got %v", err)
+	}
+}
+
+func TestPromiseJobLimitAndCleanup(t *testing.T) {
+	enter(t)
+	vm := New()
+	vm.SetMaxPromiseJobs(200)
+	vm.SetMemoryLimit(8 * mib)
+	_, err := vm.RunString(`function loop(){ Promise.resolve().then(loop); } loop();`)
+	var ie *InterruptedError
+	var je *JobLimitError
+	if !errors.As(err, &ie) || !errors.As(err, &je) {
+		t.Fatalf("want *InterruptedError{*JobLimitError}, got %T %v", err, err)
+	}
+	if vm.PromiseJobCount() <= 200 {
+		t.Fatalf("PromiseJobCount=%d must exceed 200", vm.PromiseJobCount())
+	}
+	if len(vm.jobQueue) != 0 {
+		t.Fatalf("jobQueue must be cleared on abrupt leave(), got len=%d", len(vm.jobQueue))
+	}
+}
+
+func TestJSONParseAmplificationBudget(t *testing.T) {
+	// "[1,1,1,...]" is ~2 bytes per element in JSON but ~16 bytes per Value in Go; must hit memory limit cleanly.
+	runLimited(t, `JSON.parse("[" + "1,".repeat(250000) + "1]")`, budget, 3*time.Second)
+}
+
+func TestFreezeIntrinsicsAndApplySandbox(t *testing.T) {
+	enter(t)
+	vm := New()
+	opts := DefaultSandboxOptions()
+	opts.FreezeIntrinsics = true
+	vm.ApplySandbox(opts)
+
+	// Prototype pollution must fail in strict mode and leave fresh objects clean.
+	prg, err := CompileSandbox("proto.js", `
+		let blocked = false;
+		try { Object.prototype.isAdmin = true; } catch (e) { blocked = e instanceof TypeError; }
+		JSON.stringify({ blocked, polluted: ({}).isAdmin === true, codeGen: (() => { try { eval("1"); return false; } catch(e) { return e instanceof EvalError; } })() });
+	`, 4096, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := vm.RunProgram(prg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.String() != `{"blocked":true,"polluted":false,"codeGen":true}` {
+		t.Fatalf("unexpected result: %s", v.String())
+	}
+
+	// Verify GarbleSafeJSON mapper is active.
+	type dto struct {
+		HiddenFieldName string `json:"tenantId"`
+	}
+	_ = vm.Set("info", dto{HiddenFieldName: "acme"})
+	v2, err := vm.RunString(`info.tenantId`)
+	if err != nil || v2.String() != "acme" {
+		t.Fatalf("garble-safe JSON tag lookup failed: %v %v", v2, err)
+	}
 }

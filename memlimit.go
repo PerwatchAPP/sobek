@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"time"
 	"unsafe"
+
+	"github.com/grafana/sobek/parser"
 )
 
 // MemoryLimitError is the value of the *InterruptedError that Run*() returns once the allocation budget set with
@@ -23,6 +25,143 @@ type StepLimitError struct{ Limit, Used int64 }
 
 func (e *StepLimitError) Error() string {
 	return fmt.Sprintf("step limit exceeded: executed %d of %d steps", e.Used, e.Limit)
+}
+
+// JobLimitError is the value of the *InterruptedError that Run*() returns once the promise microtask job budget
+// set with SetMaxPromiseJobs is exceeded.
+type JobLimitError struct{ Limit, Queued int64 }
+
+func (e *JobLimitError) Error() string {
+	return fmt.Sprintf("promise job limit exceeded: queued %d of %d jobs", e.Queued, e.Limit)
+}
+
+// SetMaxPromiseJobs sets a monotonic limit on total promise microtask jobs enqueued in this runtime (0 = unlimited).
+// Exceeding it aborts execution with an uncatchable *InterruptedError whose Value() is a *JobLimitError.
+func (r *Runtime) SetMaxPromiseJobs(maxJobs int64) {
+	r.jobLimit = maxJobs
+}
+
+// PromiseJobCount returns the total number of promise microtask jobs enqueued so far.
+func (r *Runtime) PromiseJobCount() int64 {
+	return r.jobsQueued
+}
+
+func (r *Runtime) chargePromiseJob() {
+	if r.jobsQueued < math.MaxInt64 {
+		r.jobsQueued++
+	}
+	if r.jobLimit > 0 && r.jobsQueued > r.jobLimit {
+		ex := &InterruptedError{iface: &JobLimitError{Limit: r.jobLimit, Queued: r.jobsQueued}}
+		ex.stack = r.vm.captureStack(nil, 0)
+		panic(ex)
+	}
+}
+
+// CompileSandbox compiles untrusted JavaScript in strict mode with source maps unconditionally disabled (preventing
+// //# sourceMappingURL= local filesystem reads / SMB probes / OOM during compilation) and bounded source size and
+// parser nesting depth. Defaults: maxSourceBytes = 256 KiB if <= 0, maxNestingDepth = 256 if <= 0.
+func CompileSandbox(name, src string, maxSourceBytes, maxNestingDepth int) (*Program, error) {
+	if maxSourceBytes <= 0 {
+		maxSourceBytes = 256 << 10
+	}
+	if len(src) > maxSourceBytes {
+		return nil, fmt.Errorf("source size %d exceeds sandbox limit of %d bytes", len(src), maxSourceBytes)
+	}
+	if maxNestingDepth <= 0 {
+		maxNestingDepth = 256
+	}
+	return CompileWithOptions(
+		name,
+		src,
+		true,
+		parser.WithDisableSourceMaps,
+		parser.WithMaxNestingDepth(maxNestingDepth),
+	)
+}
+
+// SandboxOptions configures a hardened multi-tenant sandbox profile via Runtime.ApplySandbox.
+type SandboxOptions struct {
+	MemoryLimitBytes int64
+	MaxSteps         int64
+	MaxPromiseJobs   int64
+	RegExpTimeout    time.Duration
+	MaxCallStackSize int
+	MaxNestingDepth  int
+	DisableCodeGen   bool
+	GarbleSafeJSON   bool // sets TagFieldNameMapper("json", false) so garble struct obfuscation cannot break JS names
+	FreezeIntrinsics bool // freezes core global prototypes and namespaces against prototype pollution
+}
+
+// DefaultSandboxOptions returns a conservative multi-tenant plugin sandbox configuration suitable for untrusted code.
+func DefaultSandboxOptions() SandboxOptions {
+	return SandboxOptions{
+		MemoryLimitBytes: 16 << 20,
+		MaxSteps:         2_000_000,
+		MaxPromiseJobs:   10_000,
+		RegExpTimeout:    150 * time.Millisecond,
+		MaxCallStackSize: 256,
+		MaxNestingDepth:  256,
+		DisableCodeGen:   true,
+		GarbleSafeJSON:   true,
+		FreezeIntrinsics: false,
+	}
+}
+
+// ApplySandbox applies all configured sandbox limits, safe parser options (source maps disabled + nesting cap),
+// optional garble-safe field name mapping, and optional intrinsic freezing in one call.
+func (r *Runtime) ApplySandbox(opts SandboxOptions) {
+	if opts.MemoryLimitBytes > 0 {
+		r.SetMemoryLimit(opts.MemoryLimitBytes)
+	}
+	if opts.MaxSteps > 0 {
+		r.SetMaxSteps(opts.MaxSteps)
+	}
+	if opts.MaxPromiseJobs > 0 {
+		r.SetMaxPromiseJobs(opts.MaxPromiseJobs)
+	}
+	if opts.RegExpTimeout > 0 {
+		r.SetRegExpTimeout(opts.RegExpTimeout)
+	}
+	if opts.MaxCallStackSize > 0 {
+		r.SetMaxCallStackSize(opts.MaxCallStackSize)
+	}
+	r.SetCodeGenDisabled(opts.DisableCodeGen)
+	depth := opts.MaxNestingDepth
+	if depth <= 0 {
+		depth = 256
+	}
+	r.SetParserOptions(parser.WithDisableSourceMaps, parser.WithMaxNestingDepth(depth))
+	if opts.GarbleSafeJSON {
+		r.SetFieldNameMapper(TagFieldNameMapper("json", false))
+	}
+	if opts.FreezeIntrinsics {
+		r.FreezeIntrinsics()
+	}
+}
+
+// FreezeIntrinsics freezes core global prototypes and built-in namespaces (Object, Array, Function, String, Number,
+// Boolean, RegExp, Error, Promise, Map, Set, Date, JSON, Math, Reflect) so untrusted scripts cannot perform
+// prototype pollution. Note that once frozen, scripts cannot overwrite inherited methods like toString on plain
+// objects via assignment in strict mode (Object.defineProperty still works).
+func (r *Runtime) FreezeIntrinsics() {
+	defer r.pauseMem()()
+	names := []string{
+		"Object", "Array", "Function", "String", "Number", "Boolean",
+		"RegExp", "Error", "TypeError", "RangeError", "SyntaxError", "EvalError",
+		"Promise", "Map", "Set", "Date", "Symbol", "BigInt",
+		"JSON", "Math", "Reflect",
+	}
+	for _, name := range names {
+		v := r.Get(name)
+		if obj, ok := v.(*Object); ok {
+			if proto := obj.Get("prototype"); proto != nil {
+				if pobj, ok := proto.(*Object); ok {
+					r.object_freeze(FunctionCall{Arguments: []Value{pobj}})
+				}
+			}
+			r.object_freeze(FunctionCall{Arguments: []Value{obj}})
+		}
+	}
 }
 
 // SetMaxSteps sets a deterministic monotonic CPU step budget (0 = unlimited, the upstream behaviour). Steps are

@@ -55,16 +55,25 @@ type options struct {
 	module            bool
 	disableSourceMaps bool
 	sourceMapLoader   func(path string) ([]byte, error)
+	maxNestingDepth   int
 }
 
 // Option represents one of the options for the parser to use in the Parse methods. Currently supported are:
-// WithDisableSourceMaps and WithSourceMapLoader.
+// WithDisableSourceMaps, WithSourceMapLoader, and WithMaxNestingDepth.
 type Option func(*options)
 
 // WithDisableSourceMaps is an option to disable source maps support. May save a bit of time when source maps
-// are not in use.
+// are not in use and prevents sourceMappingURL directives from triggering local filesystem reads.
 func WithDisableSourceMaps(opts *options) {
 	opts.disableSourceMaps = true
+}
+
+// WithMaxNestingDepth caps the recursive AST nesting depth allowed during parsing (defaults to 10000 if <= 0).
+// Setting a lower bound (e.g. 256) hardens the parser against deeply nested untrusted input.
+func WithMaxNestingDepth(depth int) Option {
+	return func(opts *options) {
+		opts.maxNestingDepth = depth
+	}
 }
 
 func IsModule(opts *options) {
@@ -235,7 +244,11 @@ const maxNestingDepth = 10000
 
 func (self *_parser) enterNesting() {
 	self.depth++
-	if self.depth == maxNestingDepth+1 {
+	limit := self.opts.maxNestingDepth
+	if limit <= 0 {
+		limit = maxNestingDepth
+	}
+	if self.depth == limit+1 {
 		self.nestingExceeded()
 	}
 }

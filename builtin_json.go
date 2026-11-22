@@ -86,6 +86,7 @@ func (r *Runtime) builtinJSON_decodeObject(d *json.Decoder) (*Object, error) {
 	defer r.leaveNative()
 	object := r.NewObject()
 	for {
+		r.tick()
 		key, end, err := r.builtinJSON_decodeObjectKey(d)
 		if err != nil {
 			return nil, err
@@ -125,6 +126,7 @@ func (r *Runtime) builtinJSON_decodeArray(d *json.Decoder) (*Object, error) {
 	defer r.leaveNative()
 	var arrayValue []Value
 	for {
+		r.tick()
 		tok, err := d.Token()
 		if err != nil {
 			return nil, err
@@ -138,6 +140,7 @@ func (r *Runtime) builtinJSON_decodeArray(d *json.Decoder) (*Object, error) {
 		if err != nil {
 			return nil, err
 		}
+		r.chargeMem(valueSize)
 		arrayValue = append(arrayValue, value)
 	}
 	return r.newArrayValues(arrayValue), nil
@@ -163,6 +166,7 @@ func (r *Runtime) builtinJSON_reviveWalk(reviver func(FunctionCall) Value, holde
 			}
 		} else {
 			for _, name := range object.self.stringKeys(false, nil) {
+				r.tick()
 				value := r.builtinJSON_reviveWalk(reviver, object, name)
 				if value == _undefined {
 					object.self.deleteStr(name.string(), false)

@@ -222,9 +222,10 @@ type Runtime struct {
 	// to detect and handle circular references
 	toStringStack []*Object
 
-	memLimit, memUsed   int64
+	memLimit, memUsed    int64
 	stepLimit, stepsUsed int64
-	memPaused           int // >0: chargeMem is off (internal await re-wrap only, never across user code)
+	jobLimit, jobsQueued int64
+	memPaused            int // >0: chargeMem is off (internal await re-wrap only, never across user code)
 	ticks               uint32
 	cbuf                concatBufs // see memlimit_concat.go
 	nativeDepth         int
@@ -1396,6 +1397,12 @@ func New() *Runtime {
 // at the same time).
 func Compile(name, src string, strict bool) (*Program, error) {
 	return compile(name, src, strict, true, nil)
+}
+
+// CompileWithOptions is like Compile but forwards parser options (e.g. parser.WithDisableSourceMaps,
+// parser.WithMaxNestingDepth) to the underlying parser.
+func CompileWithOptions(name, src string, strict bool, options ...parser.Option) (*Program, error) {
+	return compile(name, src, strict, true, nil, options...)
 }
 
 // CompileAST creates an internal representation of the JavaScript code that can be later run using the Runtime.RunProgram()
@@ -3103,16 +3110,19 @@ func (r *Runtime) getHash() *maphash.Hash {
 
 // called when the top level function returns normally (i.e. control is passed outside the Runtime).
 func (r *Runtime) leave() {
+	defer func() {
+		r.jobQueue = nil
+		r.vm.stack = nil
+		r.cbuf = concatBufs{}
+	}()
 	var jobs []func()
 	for len(r.jobQueue) > 0 {
 		jobs, r.jobQueue = r.jobQueue, jobs[:0]
 		for _, job := range jobs {
+			r.checkInterrupt()
 			job()
 		}
 	}
-	r.jobQueue = nil
-	r.vm.stack = nil
-	r.cbuf = concatBufs{}
 }
 
 // called when the top level function returns (i.e. control is passed outside the Runtime) but it was due to an interrupt
